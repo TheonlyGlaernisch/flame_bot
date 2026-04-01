@@ -29,15 +29,12 @@ class PnWClient:
     # ------------------------------------------------------------------
 
     async def _query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        url = PNW_GRAPHQL_URL
+        url = f"{PNW_GRAPHQL_URL}?api_key={self._api_key}"
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url,
                 json={"query": query, "variables": variables},
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Api-Key": self._api_key,
-                },
+                headers={"Content-Type": "application/json"},
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()

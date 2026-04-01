@@ -158,10 +158,13 @@ class TestGetNation:
                 "nations": {
                     "data": [
                         {
-                            "id": "42",
+                            "id": "676593",
                             "nation_name": "Testland",
                             "leader_name": "TestLeader",
                             "discord": "testuser",
+                            "num_cities": 10,
+                            "score": 1234.56,
+                            "last_active": "2024-03-20 12:00:00",
                         }
                     ]
                 }
@@ -171,13 +174,16 @@ class TestGetNation:
         client = PnWClient(api_key="dummy")
 
         with patch.object(client, "_query", new=AsyncMock(return_value=mock_response_data)):
-            nation = await client.get_nation(42)
+            nation = await client.get_nation(676593)
 
         assert nation is not None
-        assert nation.nation_id == 42
+        assert nation.nation_id == 676593
         assert nation.nation_name == "Testland"
         assert nation.leader_name == "TestLeader"
         assert nation.discord_tag == "testuser"
+        assert nation.num_cities == 10
+        assert nation.score == 1234.56
+        assert nation.last_active == "2024-03-20 12:00:00"
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_data(self):
