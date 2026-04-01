@@ -15,8 +15,9 @@ Commands
 /whois <member>
     Show the registered nation for a Discord member.
 
-/check_roles <member>  (admin only)
-    Re-evaluate and update bar3 roles for the given member.
+/check_roles
+    Re-evaluate and sync bar3 roles for the calling user.
+    Used by bar3 to decide whether the logged-in Discord user has access.
 """
 from __future__ import annotations
 
@@ -325,17 +326,15 @@ async def whois(interaction: discord.Interaction, member: discord.Member) -> Non
 
 
 # ---------------------------------------------------------------------------
-# /check_roles  (admin only)
+# /check_roles
 # ---------------------------------------------------------------------------
 
 
 @bot.tree.command(
     name="check_roles",
-    description="Re-evaluate and update bar3 roles for a member. (Admin only)",
+    description="Sync your bar3 roles so bar3 can verify your access.",
 )
-@app_commands.describe(member="The Discord member whose roles should be updated.")
-@app_commands.default_permissions(administrator=True)
-async def check_roles(interaction: discord.Interaction, member: discord.Member) -> None:
+async def check_roles(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
 
     guild = interaction.guild
@@ -343,10 +342,15 @@ async def check_roles(interaction: discord.Interaction, member: discord.Member) 
         await interaction.followup.send("❌ This command must be used in a server.", ephemeral=True)
         return
 
-    row = bot.db.get_by_discord_id(member.id)
+    member = guild.get_member(interaction.user.id)
+    if member is None:
+        await interaction.followup.send("❌ Could not resolve your server membership.", ephemeral=True)
+        return
+
+    row = bot.db.get_by_discord_id(interaction.user.id)
     if row is None:
         await interaction.followup.send(
-            f"ℹ️ {member.mention} has not registered yet. No roles updated.",
+            "ℹ️ You have not registered yet. Use `/register` to link your nation first.",
             ephemeral=True,
         )
         return

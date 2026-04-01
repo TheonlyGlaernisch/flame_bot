@@ -97,8 +97,7 @@ class TestDatabase:
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         # Create old-style DB without the discord_username column
-        import sqlite3 as _sqlite3
-        conn = _sqlite3.connect(tmp.name)
+        conn = sqlite3.connect(tmp.name)
         conn.execute(
             "CREATE TABLE registrations "
             "(discord_id TEXT PRIMARY KEY, nation_id INTEGER NOT NULL UNIQUE, registered_at TEXT NOT NULL)"
