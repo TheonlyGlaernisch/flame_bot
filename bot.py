@@ -24,9 +24,11 @@ from __future__ import annotations
 import logging
 
 import discord
+from aiohttp import web
 from discord import app_commands
 
 import config
+from api import RoleConfig, create_app
 from database import Database
 from pnw_api import PnWClient
 
@@ -76,6 +78,7 @@ class FlameBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.db = Database(config.DB_PATH)
         self.pnw = PnWClient(config.PNW_API_KEY)
+        self._api_runner: web.AppRunner | None = None
 
     async def setup_hook(self) -> None:
         guild = discord.Object(id=config.GUILD_ID)
@@ -85,6 +88,30 @@ class FlameBot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%d)", self.user, self.user.id)
+        if config.API_KEY:
+            await self._start_api()
+
+    async def _start_api(self) -> None:
+        app = create_app(
+            guild_getter=lambda: self.get_guild(config.GUILD_ID),
+            db=self.db,
+            api_key=config.API_KEY,  # type: ignore[arg-type]
+            role_config=RoleConfig(
+                verified_role_id=config.VERIFIED_ROLE_ID,
+                bar3_client_role_id=config.BAR3_CLIENT_ROLE_ID,
+                bar3_server_role_id=config.BAR3_SERVER_ROLE_ID,
+            ),
+        )
+        self._api_runner = web.AppRunner(app)
+        await self._api_runner.setup()
+        site = web.TCPSite(self._api_runner, "0.0.0.0", config.API_PORT)
+        await site.start()
+        log.info("bar3 API listening on port %d.", config.API_PORT)
+
+    async def close(self) -> None:
+        if self._api_runner is not None:
+            await self._api_runner.cleanup()
+        await super().close()
 
 
 bot = FlameBot()

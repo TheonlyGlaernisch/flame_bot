@@ -32,3 +32,8 @@ BAR3_CLIENT_ROLE_ID: int | None = _optional_int("BAR3_CLIENT_ROLE_ID")
 BAR3_SERVER_ROLE_ID: int | None = _optional_int("BAR3_SERVER_ROLE_ID")
 
 DB_PATH: str = os.getenv("DB_PATH", "registrations.db")
+
+# HTTP API for bar3 integration
+# If API_KEY is not set the API server will not start.
+API_KEY: str | None = os.getenv("API_KEY") or None
+API_PORT: int = int(os.getenv("API_PORT", "8080"))
