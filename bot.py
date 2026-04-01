@@ -76,7 +76,7 @@ class FlameBot(discord.Client):
         intents.members = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self.db = Database(config.DB_PATH)
+        self.db = Database(config.MONGODB_URI)
         self.pnw = PnWClient(config.PNW_API_KEY)
         self._api_runner: web.AppRunner | None = None
 

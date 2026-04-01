@@ -39,7 +39,11 @@ VERIFIED_ROLE_ID: int | None = _optional_int("VERIFIED_ROLE_ID")
 BAR3_CLIENT_ROLE_ID: int | None = _optional_int("BAR3_CLIENT_ROLE_ID")
 BAR3_SERVER_ROLE_ID: int | None = _optional_int("BAR3_SERVER_ROLE_ID")
 
-DB_PATH: str = os.getenv("DB_PATH", "registrations.db")
+_MONGODB_PASSWORD: str = _require("MONGODB_PASSWORD")
+MONGODB_URI: str = (
+    f"mongodb+srv://glaernischgaming_db_user:{_MONGODB_PASSWORD}"
+    "@glaernisch.0o1fjdx.mongodb.net/?appName=Glaernisch"
+)
 
 # HTTP API for bar3 integration
 # If API_KEY is not set the API server will not start.

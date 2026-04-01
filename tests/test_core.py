@@ -1,9 +1,9 @@
 """Tests for database.py and pnw_api.py (no Discord or network calls)."""
-import sqlite3
-import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import mongomock
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 from database import Database
 from pnw_api import PnWClient
@@ -14,104 +14,78 @@ from pnw_api import PnWClient
 # ---------------------------------------------------------------------------
 
 
-class TestDatabase:
-    def _make_db(self) -> Database:
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        return Database(tmp.name)
+def _make_db() -> Database:
+    """Return an isolated in-memory Database backed by mongomock."""
+    return Database("mongodb://irrelevant", _client=mongomock.MongoClient())
 
+
+class TestDatabase:
     def test_register_and_retrieve_by_discord_id(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="alice")
         row = db.get_by_discord_id(123)
         assert row is not None
         assert int(row["nation_id"]) == 456
 
     def test_register_and_retrieve_by_nation_id(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="alice")
         row = db.get_by_nation_id(456)
         assert row is not None
         assert row["discord_id"] == "123"
 
     def test_register_updates_existing_entry(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="alice")
         db.register(discord_id=123, nation_id=789, discord_username="alice")
         row = db.get_by_discord_id(123)
         assert int(row["nation_id"]) == 789
 
     def test_get_missing_discord_id_returns_none(self):
-        db = self._make_db()
+        db = _make_db()
         assert db.get_by_discord_id(999) is None
 
     def test_get_missing_nation_id_returns_none(self):
-        db = self._make_db()
+        db = _make_db()
         assert db.get_by_nation_id(999) is None
 
     def test_delete_returns_true_when_deleted(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="alice")
         assert db.delete(123) is True
         assert db.get_by_discord_id(123) is None
 
     def test_delete_returns_false_when_not_found(self):
-        db = self._make_db()
+        db = _make_db()
         assert db.delete(999) is False
 
     def test_nation_id_unique_across_users(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=111, nation_id=456, discord_username="alice")
-        with pytest.raises(sqlite3.IntegrityError):
-            with db._connect() as conn:
-                conn.execute(
-                    "INSERT INTO registrations (discord_id, nation_id, registered_at, discord_username) "
-                    "VALUES (?, ?, ?, ?)",
-                    ("222", 456, "2024-01-01T00:00:00+00:00", "bob"),
-                )
+        with pytest.raises(DuplicateKeyError):
+            db.register(discord_id=222, nation_id=456, discord_username="bob")
 
     def test_get_by_discord_username(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="alice")
         row = db.get_by_discord_username("alice")
         assert row is not None
         assert int(row["nation_id"]) == 456
 
     def test_get_by_discord_username_case_insensitive(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="Alice")
         assert db.get_by_discord_username("alice") is not None
         assert db.get_by_discord_username("ALICE") is not None
 
     def test_get_by_discord_username_strips_whitespace(self):
-        db = self._make_db()
+        db = _make_db()
         db.register(discord_id=123, nation_id=456, discord_username="alice")
         assert db.get_by_discord_username("  alice  ") is not None
 
     def test_get_by_discord_username_returns_none_when_missing(self):
-        db = self._make_db()
+        db = _make_db()
         assert db.get_by_discord_username("nobody") is None
-
-    def test_migration_adds_column_to_existing_db(self):
-        """A DB created without discord_username column must be migrated on open."""
-        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.close()
-        # Create old-style DB without the discord_username column
-        conn = sqlite3.connect(tmp.name)
-        conn.execute(
-            "CREATE TABLE registrations "
-            "(discord_id TEXT PRIMARY KEY, nation_id INTEGER NOT NULL UNIQUE, registered_at TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO registrations VALUES ('999', 1, '2024-01-01T00:00:00+00:00')"
-        )
-        conn.commit()
-        conn.close()
-        # Opening the Database should run the migration without error
-        db = Database(tmp.name)
-        row = db.get_by_discord_id(999)
-        assert row is not None
-        assert row["discord_username"] == ""
 
 
 # ---------------------------------------------------------------------------
