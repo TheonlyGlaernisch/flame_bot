@@ -48,6 +48,18 @@ def _make_guild(
 # ---------------------------------------------------------------------------
 
 
+class TestIndexEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_200_with_expected_text(self):
+        db = _make_db()
+        app = create_app(lambda: None, db, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/")
+            assert resp.status == 200
+            text = await resp.text()
+            assert text == "would you kindly begone"
+
+
 class TestRolesEndpoint:
     @pytest.mark.asyncio
     async def test_missing_api_key_returns_401(self):
