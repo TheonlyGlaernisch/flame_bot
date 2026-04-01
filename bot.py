@@ -249,7 +249,7 @@ async def who(interaction: discord.Interaction, query: str) -> None:
             return
 
         try:
-            nation = await bot.pnw.get_nation(nation_id)
+            nation = await bot.pnw.get_nation_rest(nation_id)
         except Exception as exc:
             log.exception("PnW API error while fetching nation %d", nation_id)
             await interaction.followup.send(
@@ -293,7 +293,7 @@ async def who(interaction: discord.Interaction, query: str) -> None:
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await bot.pnw.get_nation_rest(nation_id)
     except Exception:
         nation = None
 
@@ -335,14 +335,17 @@ async def whois(interaction: discord.Interaction, member: discord.Member) -> Non
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await bot.pnw.get_nation_rest(nation_id)
     except Exception:
         nation = None
 
     if nation:
         await interaction.followup.send(
-            f"**{member.display_name}** is registered as nation "
-            f"**{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name}).",
+            f"🔗 {member.mention} → **{nation.nation_name}** (ID: `{nation_id}`)\n"
+            f"👤 Leader: {nation.leader_name}\n"
+            f"🏙️ Cities: {nation.num_cities}\n"
+            f"⭐ Score: {nation.score:,.2f}\n"
+            f"🕐 Last active: {nation.last_active or 'unknown'}",
         )
     else:
         await interaction.followup.send(
@@ -384,7 +387,7 @@ async def check_roles(interaction: discord.Interaction) -> None:
 
     # Fetch nation to confirm it still exists
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await bot.pnw.get_nation_rest(nation_id)
     except Exception as exc:
         await interaction.followup.send(
             f"❌ Could not reach the PnW API: {exc}"

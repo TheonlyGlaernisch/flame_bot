@@ -1,4 +1,4 @@
-"""Thin async wrapper around the Politics and War GraphQL API."""
+"""Thin async wrapper around the Politics and War GraphQL and REST APIs."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ from typing import Any, Optional
 import aiohttp
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
+PNW_REST_URL = "https://politicsandwar.com/api/nation/"
 
 
 @dataclass
@@ -17,7 +18,10 @@ class Nation:
     discord_tag: str  # the Discord handle stored on the nation (may be empty)
     num_cities: int = 0
     score: float = 0.0
+    # GraphQL sets this to a raw timestamp; REST sets it to "X minutes ago"
     last_active: str = ""
+    # Only populated by get_nation_rest; 0 when sourced from GraphQL
+    minutes_since_active: int = 0
 
 
 class PnWClient:
@@ -79,6 +83,30 @@ class PnWClient:
             num_cities=int(n.get("num_cities") or 0),
             score=float(n.get("score") or 0.0),
             last_active=n.get("last_active", "") or "",
+        )
+
+    async def get_nation_rest(self, nation_id: int) -> Optional[Nation]:
+        """Fetch a nation by its numeric ID using the PnW v1 REST API.
+
+        Returns ``None`` if the nation is not found or the API reports failure.
+        """
+        url = f"{PNW_REST_URL}?id={nation_id}&key={self._api_key}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
+        if not data.get("success"):
+            return None
+        minutes = int(data.get("minutessinceactive") or 0)
+        return Nation(
+            nation_id=int(data.get("nationid") or nation_id),
+            nation_name=data.get("name", ""),
+            leader_name=data.get("leadername", ""),
+            discord_tag="",  # v1 REST API does not expose the Discord field
+            num_cities=int(data.get("cities") or 0),
+            score=float(data.get("score") or 0.0),
+            last_active=f"{minutes} minutes ago" if minutes else "",
+            minutes_since_active=minutes,
         )
 
     @staticmethod
