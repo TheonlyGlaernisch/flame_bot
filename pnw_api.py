@@ -15,6 +15,9 @@ class Nation:
     nation_name: str
     leader_name: str
     discord_tag: str  # the Discord handle stored on the nation (may be empty)
+    num_cities: int = 0
+    score: float = 0.0
+    last_active: str = ""
 
 
 class PnWClient:
@@ -59,6 +62,9 @@ class PnWClient:
                     nation_name
                     leader_name
                     discord
+                    num_cities
+                    score
+                    last_active
                 }
             }
         }
@@ -73,6 +79,9 @@ class PnWClient:
             nation_name=n.get("nation_name", ""),
             leader_name=n.get("leader_name", ""),
             discord_tag=n.get("discord", "") or "",
+            num_cities=int(n.get("num_cities") or 0),
+            score=float(n.get("score") or 0.0),
+            last_active=n.get("last_active", "") or "",
         )
 
     @staticmethod
