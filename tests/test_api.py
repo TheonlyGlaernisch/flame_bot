@@ -1,9 +1,9 @@
 """Tests for the bar3 HTTP API (api.py)."""
 from __future__ import annotations
 
-import tempfile
 from unittest.mock import MagicMock
 
+import mongomock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -19,9 +19,7 @@ API_KEY = "test-secret-key"
 
 
 def _make_db() -> Database:
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    return Database(tmp.name)
+    return Database("mongodb://irrelevant", _client=mongomock.MongoClient())
 
 
 def _make_guild(
@@ -48,6 +46,18 @@ def _make_guild(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+class TestIndexEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_200_with_expected_text(self):
+        db = _make_db()
+        app = create_app(lambda: None, db, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/")
+            assert resp.status == 200
+            text = await resp.text()
+            assert text == "would you kindly begone"
 
 
 class TestRolesEndpoint:

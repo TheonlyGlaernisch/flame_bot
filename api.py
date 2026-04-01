@@ -4,8 +4,12 @@ flame_bot – HTTP API server for bar3 integration.
 bar3 (the website) calls this API after a user logs in via Discord OAuth to
 decide whether the user should be granted access.
 
-Endpoint
---------
+Endpoints
+---------
+GET /
+    Returns plain text "would you kindly begone".  Useful as a health-check
+    when the bot is hosted on a platform like Render.
+
 GET /api/roles/{discord_id}
     Returns the bar3 role status for the given Discord user ID.
 
@@ -79,6 +83,9 @@ def create_app(
     if role_config is None:
         role_config = RoleConfig()
 
+    async def index(request: web.Request) -> web.Response:
+        return web.Response(text="would you kindly begone")
+
     async def get_roles(request: web.Request) -> web.Response:
         if not _check_api_key(request, api_key):
             return web.json_response({"error": "Unauthorized"}, status=401)
@@ -119,5 +126,6 @@ def create_app(
         )
 
     app = web.Application()
+    app.router.add_get("/", index)
     app.router.add_get("/api/roles/{discord_id}", get_roles)
     return app
