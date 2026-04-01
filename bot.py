@@ -127,11 +127,11 @@ bot = FlameBot()
 )
 @app_commands.describe(nation_id="Your numeric Politics and War nation ID.")
 async def register(interaction: discord.Interaction, nation_id: int) -> None:
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
 
     if nation_id <= 0:
         await interaction.followup.send(
-            "❌ Please provide a valid positive nation ID.", ephemeral=True
+            "❌ Please provide a valid positive nation ID."
         )
         return
 
@@ -142,7 +142,6 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     if existing_by_nation and int(existing_by_nation["discord_id"]) != interaction.user.id:
         await interaction.followup.send(
             "❌ That nation is already registered to a different Discord account.",
-            ephemeral=True,
         )
         return
 
@@ -154,13 +153,13 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     except Exception as exc:
         log.exception("PnW API error while fetching nation %d", nation_id)
         await interaction.followup.send(
-            f"❌ Could not reach the Politics and War API: {exc}", ephemeral=True
+            f"❌ Could not reach the Politics and War API: {exc}"
         )
         return
 
     if nation is None:
         await interaction.followup.send(
-            f"❌ Nation with ID **{nation_id}** was not found.", ephemeral=True
+            f"❌ Nation with ID **{nation_id}** was not found."
         )
         return
 
@@ -176,7 +175,6 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
             f"but your Discord username is `{username}`.\n\n"
             f"Please set your Discord handle on your nation's edit page to "
             f"`{username}` and try again.",
-            ephemeral=True,
         )
         return
 
@@ -219,7 +217,6 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
         f"✅ Successfully registered!\n"
         f"Nation: **{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name})"
         f"{roles_text}",
-        ephemeral=True,
     )
 
 
@@ -236,7 +233,7 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     query="A numeric nation ID to fetch from PnW, or a Discord username to look up in the database."
 )
 async def who(interaction: discord.Interaction, query: str) -> None:
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
 
     query = query.strip()
 
@@ -247,37 +244,40 @@ async def who(interaction: discord.Interaction, query: str) -> None:
         nation_id = int(query)
         if nation_id <= 0:
             await interaction.followup.send(
-                "❌ Please provide a valid positive nation ID.", ephemeral=True
+                "❌ Please provide a valid positive nation ID."
             )
             return
 
         try:
-            nation = await bot.pnw.get_nation(nation_id)
+            nation = await bot.pnw.get_nation_rest(nation_id)
         except Exception as exc:
             log.exception("PnW API error while fetching nation %d", nation_id)
             await interaction.followup.send(
-                f"❌ Could not reach the Politics and War API: {exc}", ephemeral=True
+                f"❌ Could not reach the Politics and War API: {exc}"
             )
             return
 
         if nation is None:
             await interaction.followup.send(
-                f"ℹ️ No nation with ID `{nation_id}` was found.", ephemeral=True
+                f"ℹ️ No nation with ID `{nation_id}` was found."
             )
             return
 
         # Also surface any local registration for this nation
         row = bot.db.get_by_nation_id(nation_id)
-        registered_part = (
-            f"\nRegistered Discord user: `{_format_discord_identifier(row)}`"
+        discord_part = (
+            f"\n🔗 Discord: `{_format_discord_identifier(row)}`"
             if row
-            else ""
+            else (f"\n🔗 PnW Discord: `{nation.discord_tag}`" if nation.discord_tag else "")
         )
 
         await interaction.followup.send(
-            f"🌐 **{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name})"
-            f"{registered_part}",
-            ephemeral=True,
+            f"🌐 **{nation.nation_name}** (ID: `{nation_id}`)\n"
+            f"👤 Leader: {nation.leader_name}\n"
+            f"🏙️ Cities: {nation.num_cities}\n"
+            f"⭐ Score: {nation.score:,.2f}\n"
+            f"🕐 Last active: {nation.last_active or 'unknown'}"
+            f"{discord_part}",
         )
         return
 
@@ -287,28 +287,29 @@ async def who(interaction: discord.Interaction, query: str) -> None:
     row = bot.db.get_by_discord_username(query)
     if row is None:
         await interaction.followup.send(
-            f"ℹ️ No registration found for Discord username `{query}`.", ephemeral=True
+            f"ℹ️ No registration found for Discord username `{query}`."
         )
         return
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await bot.pnw.get_nation_rest(nation_id)
     except Exception:
         nation = None
 
     stored_name = _format_discord_identifier(row)
     if nation:
         await interaction.followup.send(
-            f"**{stored_name}** is registered as nation "
-            f"**{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name}).",
-            ephemeral=True,
+            f"🔗 **{stored_name}** → **{nation.nation_name}** (ID: `{nation_id}`)\n"
+            f"👤 Leader: {nation.leader_name}\n"
+            f"🏙️ Cities: {nation.num_cities}\n"
+            f"⭐ Score: {nation.score:,.2f}\n"
+            f"🕐 Last active: {nation.last_active or 'unknown'}",
         )
     else:
         await interaction.followup.send(
             f"**{stored_name}** is registered with nation ID `{nation_id}` "
             f"(nation details unavailable).",
-            ephemeral=True,
         )
 
 
@@ -323,32 +324,33 @@ async def who(interaction: discord.Interaction, query: str) -> None:
 )
 @app_commands.describe(member="The Discord member to look up.")
 async def whois(interaction: discord.Interaction, member: discord.Member) -> None:
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
 
     row = bot.db.get_by_discord_id(member.id)
     if row is None:
         await interaction.followup.send(
-            f"ℹ️ {member.mention} has not registered yet.", ephemeral=True
+            f"ℹ️ {member.mention} has not registered yet."
         )
         return
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await bot.pnw.get_nation_rest(nation_id)
     except Exception:
         nation = None
 
     if nation:
         await interaction.followup.send(
-            f"**{member.display_name}** is registered as nation "
-            f"**{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name}).",
-            ephemeral=True,
+            f"🔗 {member.mention} → **{nation.nation_name}** (ID: `{nation_id}`)\n"
+            f"👤 Leader: {nation.leader_name}\n"
+            f"🏙️ Cities: {nation.num_cities}\n"
+            f"⭐ Score: {nation.score:,.2f}\n"
+            f"🕐 Last active: {nation.last_active or 'unknown'}",
         )
     else:
         await interaction.followup.send(
             f"**{member.display_name}** is registered with nation ID `{nation_id}` "
             f"(nation details unavailable).",
-            ephemeral=True,
         )
 
 
@@ -362,23 +364,22 @@ async def whois(interaction: discord.Interaction, member: discord.Member) -> Non
     description="Sync your bar3 roles so bar3 can verify your access.",
 )
 async def check_roles(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
 
     guild = interaction.guild
     if guild is None:
-        await interaction.followup.send("❌ This command must be used in a server.", ephemeral=True)
+        await interaction.followup.send("❌ This command must be used in a server.")
         return
 
     member = guild.get_member(interaction.user.id)
     if member is None:
-        await interaction.followup.send("❌ Could not resolve your server membership.", ephemeral=True)
+        await interaction.followup.send("❌ Could not resolve your server membership.")
         return
 
     row = bot.db.get_by_discord_id(interaction.user.id)
     if row is None:
         await interaction.followup.send(
             "ℹ️ You have not registered yet. Use `/register` to link your nation first.",
-            ephemeral=True,
         )
         return
 
@@ -386,17 +387,16 @@ async def check_roles(interaction: discord.Interaction) -> None:
 
     # Fetch nation to confirm it still exists
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await bot.pnw.get_nation_rest(nation_id)
     except Exception as exc:
         await interaction.followup.send(
-            f"❌ Could not reach the PnW API: {exc}", ephemeral=True
+            f"❌ Could not reach the PnW API: {exc}"
         )
         return
 
     if nation is None:
         await interaction.followup.send(
             f"⚠️ Nation ID `{nation_id}` no longer exists. Roles were not updated.",
-            ephemeral=True,
         )
         return
 
@@ -450,7 +450,7 @@ async def check_roles(interaction: discord.Interaction) -> None:
     if not added and not already_had:
         parts.append("No configured roles to assign.")
 
-    await interaction.followup.send("\n".join(parts), ephemeral=True)
+    await interaction.followup.send("\n".join(parts))
 
 
 # ---------------------------------------------------------------------------

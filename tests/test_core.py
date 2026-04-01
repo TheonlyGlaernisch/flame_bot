@@ -1,7 +1,7 @@
 """Tests for database.py and pnw_api.py (no Discord or network calls)."""
 import sqlite3
 import tempfile
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -158,10 +158,13 @@ class TestGetNation:
                 "nations": {
                     "data": [
                         {
-                            "id": "42",
+                            "id": "676593",
                             "nation_name": "Testland",
                             "leader_name": "TestLeader",
                             "discord": "testuser",
+                            "num_cities": 10,
+                            "score": 1234.56,
+                            "last_active": "2024-03-20 12:00:00",
                         }
                     ]
                 }
@@ -171,13 +174,16 @@ class TestGetNation:
         client = PnWClient(api_key="dummy")
 
         with patch.object(client, "_query", new=AsyncMock(return_value=mock_response_data)):
-            nation = await client.get_nation(42)
+            nation = await client.get_nation(676593)
 
         assert nation is not None
-        assert nation.nation_id == 42
+        assert nation.nation_id == 676593
         assert nation.nation_name == "Testland"
         assert nation.leader_name == "TestLeader"
         assert nation.discord_tag == "testuser"
+        assert nation.num_cities == 10
+        assert nation.score == 1234.56
+        assert nation.last_active == "2024-03-20 12:00:00"
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_data(self):
@@ -201,3 +207,85 @@ class TestGetNation:
         ):
             with pytest.raises(RuntimeError, match="Unauthorized"):
                 await client.get_nation(1)
+
+
+# ---------------------------------------------------------------------------
+# PnWClient.get_nation_rest tests (mocked HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestGetNationRest:
+    # Minimal REST response shape matching the PnW v1 API
+    _REST_RESPONSE = {
+        "success": True,
+        "nationid": "676593",
+        "name": "Testland",
+        "leadername": "TestLeader",
+        "cities": 10,
+        "score": "1234.56",
+        "minutessinceactive": 52,
+        "continent": "North America",
+        "color": "gray",
+        "alliance": "None",
+        "allianceid": "0",
+    }
+
+    def _make_mock_get(self, data: dict) -> MagicMock:
+        """Build a mock aiohttp GET context manager returning *data*."""
+        mock_resp = AsyncMock()
+        mock_resp.raise_for_status = MagicMock()  # sync in aiohttp
+        mock_resp.json = AsyncMock(return_value=data)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        return mock_session
+
+    @pytest.mark.asyncio
+    async def test_returns_nation_on_success(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy")
+        mock_session = self._make_mock_get(self._REST_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            nation = await client.get_nation_rest(676593)
+
+        assert nation is not None
+        assert nation.nation_id == 676593
+        assert nation.nation_name == "Testland"
+        assert nation.leader_name == "TestLeader"
+        assert nation.num_cities == 10
+        assert nation.score == 1234.56
+        assert nation.minutes_since_active == 52
+        assert nation.last_active == "52 minutes ago"
+        assert nation.discord_tag == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_success_false(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy")
+        mock_session = self._make_mock_get({"success": False, "error": "Nation not found."})
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            nation = await client.get_nation_rest(999999)
+
+        assert nation is None
+
+    @pytest.mark.asyncio
+    async def test_zero_minutes_active_gives_empty_last_active(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy")
+        data = {**self._REST_RESPONSE, "minutessinceactive": 0}
+        mock_session = self._make_mock_get(data)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            nation = await client.get_nation_rest(676593)
+
+        assert nation is not None
+        assert nation.minutes_since_active == 0
+        assert nation.last_active == ""
