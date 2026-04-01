@@ -249,7 +249,7 @@ async def who(interaction: discord.Interaction, query: str) -> None:
             return
 
         try:
-            nation = await bot.pnw.get_nation_rest(nation_id)
+            nation = await bot.pnw.get_nation(nation_id)
         except Exception as exc:
             log.exception("PnW API error while fetching nation %d", nation_id)
             await interaction.followup.send(
@@ -293,7 +293,7 @@ async def who(interaction: discord.Interaction, query: str) -> None:
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation_rest(nation_id)
+        nation = await bot.pnw.get_nation(nation_id)
     except Exception:
         nation = None
 
@@ -335,7 +335,7 @@ async def whois(interaction: discord.Interaction, member: discord.Member) -> Non
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation_rest(nation_id)
+        nation = await bot.pnw.get_nation(nation_id)
     except Exception:
         nation = None
 
@@ -387,7 +387,7 @@ async def check_roles(interaction: discord.Interaction) -> None:
 
     # Fetch nation to confirm it still exists
     try:
-        nation = await bot.pnw.get_nation_rest(nation_id)
+        nation = await bot.pnw.get_nation(nation_id)
     except Exception as exc:
         await interaction.followup.send(
             f"❌ Could not reach the PnW API: {exc}"
