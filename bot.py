@@ -8,6 +8,10 @@ Commands
     The bot verifies that your Discord username appears in the nation's
     in-game Discord field before accepting the registration.
 
+/who <query>
+    If <query> is numeric, fetch that nation from the PnW API.
+    If <query> is a Discord username, look it up in the local database.
+
 /whois <member>
     Show the registered nation for a Discord member.
 
@@ -51,6 +55,11 @@ def _get_role(guild: discord.Guild, role_id: int | None) -> discord.Role | None:
     if role_id is None:
         return None
     return guild.get_role(role_id)
+
+
+def _format_discord_identifier(row: object) -> str:
+    """Return the stored Discord username, falling back to the numeric ID."""
+    return row["discord_username"] or row["discord_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +155,7 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     # ------------------------------------------------------------------
     # Save registration
     # ------------------------------------------------------------------
-    bot.db.register(interaction.user.id, nation_id)
+    bot.db.register(interaction.user.id, nation_id, discord_username=interaction.user.name)
     log.info(
         "Registered discord=%d (%s) → nation=%d (%s)",
         interaction.user.id,
@@ -184,6 +193,95 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
         f"{roles_text}",
         ephemeral=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# /who
+# ---------------------------------------------------------------------------
+
+
+@bot.tree.command(
+    name="who",
+    description="Look up a nation by ID (PnW API) or a Discord username (database).",
+)
+@app_commands.describe(
+    query="A numeric nation ID to fetch from PnW, or a Discord username to look up in the database."
+)
+async def who(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    query = query.strip()
+
+    # ------------------------------------------------------------------
+    # Numeric query → fetch nation from the PnW API
+    # ------------------------------------------------------------------
+    if query.lstrip("-").isdigit():
+        nation_id = int(query)
+        if nation_id <= 0:
+            await interaction.followup.send(
+                "❌ Please provide a valid positive nation ID.", ephemeral=True
+            )
+            return
+
+        try:
+            nation = await bot.pnw.get_nation(nation_id)
+        except Exception as exc:
+            log.exception("PnW API error while fetching nation %d", nation_id)
+            await interaction.followup.send(
+                f"❌ Could not reach the Politics and War API: {exc}", ephemeral=True
+            )
+            return
+
+        if nation is None:
+            await interaction.followup.send(
+                f"ℹ️ No nation with ID `{nation_id}` was found.", ephemeral=True
+            )
+            return
+
+        # Also surface any local registration for this nation
+        row = bot.db.get_by_nation_id(nation_id)
+        registered_part = (
+            f"\nRegistered Discord user: `{_format_discord_identifier(row)}`"
+            if row
+            else ""
+        )
+
+        await interaction.followup.send(
+            f"🌐 **{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name})"
+            f"{registered_part}",
+            ephemeral=True,
+        )
+        return
+
+    # ------------------------------------------------------------------
+    # String query → look up Discord username in the database
+    # ------------------------------------------------------------------
+    row = bot.db.get_by_discord_username(query)
+    if row is None:
+        await interaction.followup.send(
+            f"ℹ️ No registration found for Discord username `{query}`.", ephemeral=True
+        )
+        return
+
+    nation_id = row["nation_id"]
+    try:
+        nation = await bot.pnw.get_nation(nation_id)
+    except Exception:
+        nation = None
+
+    stored_name = _format_discord_identifier(row)
+    if nation:
+        await interaction.followup.send(
+            f"**{stored_name}** is registered as nation "
+            f"**{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name}).",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"**{stored_name}** is registered with nation ID `{nation_id}` "
+            f"(nation details unavailable).",
+            ephemeral=True,
+        )
 
 
 # ---------------------------------------------------------------------------

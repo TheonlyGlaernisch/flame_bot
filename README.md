@@ -7,6 +7,7 @@ A Discord bot for the **bar3** client/server system that integrates with [Politi
 | Command | Description |
 |---|---|
 | `/register <nation_id>` | Link your Discord account to your PnW nation (with verification) |
+| `/who <query>` | Numeric ID → fetch nation from PnW API; Discord username → look up in database |
 | `/whois <member>` | Look up the registered nation for a Discord member |
 | `/check_roles <member>` *(admin)* | Re-evaluate and sync bar3 roles for a member |
 
