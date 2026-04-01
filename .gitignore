@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files (never commit real secrets)
+.env
+
+# Database
+*.db
+
+# pytest
+.pytest_cache/
+.cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
