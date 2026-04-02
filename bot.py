@@ -47,6 +47,11 @@ Commands
 /roles show
     Show the currently configured government department roles.
 
+/gov
+    Show an embed listing all server members who hold a configured government
+    role, organised by department (Economics, Military Command, Internal
+    Affairs, Basic Gov).
+
 """
 from __future__ import annotations
 
@@ -948,6 +953,76 @@ async def roles_show(interaction: discord.Interaction) -> None:
         "ℹ️ Current government role configuration:\n" + "\n".join(lines),
         ephemeral=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# /gov
+# ---------------------------------------------------------------------------
+
+# Emoji prefix for each department shown in the /gov embed.
+_GOV_DEPT_EMOJI: dict[str, str] = {
+    "econ": "💰",
+    "milcom": "⚔️",
+    "ia": "🤝",
+    "gov": "🏛️",
+}
+
+
+@bot.tree.command(
+    name="gov",
+    description="Show server members who hold a configured government role.",
+)
+async def gov(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("❌ This command can only be used inside a server.")
+        return
+
+    guild_id = interaction.guild_id or 0
+    config_roles = bot.db.get_gov_roles(guild_id)
+
+    if not any(config_roles.values()):
+        await interaction.followup.send(
+            "ℹ️ No government roles configured yet. An admin can use `/roles setup` to set them up."
+        )
+        return
+
+    embed = discord.Embed(
+        title="Government",
+        color=discord.Color.blurple(),
+    )
+
+    total = 0
+    for key, label in _GOV_DEPT_LABELS.items():
+        role_id = config_roles[key]
+        if not role_id:
+            continue
+        role = guild.get_role(role_id)
+        if role is None:
+            embed.add_field(
+                name=f"{_GOV_DEPT_EMOJI[key]} {label}",
+                value="*(role not found)*",
+                inline=False,
+            )
+            continue
+
+        members_with_role = [m for m in role.members if not m.bot]
+        total += len(members_with_role)
+        if members_with_role:
+            value = " ".join(m.mention for m in sorted(members_with_role, key=lambda m: m.display_name.lower()))
+        else:
+            value = "*(no members)*"
+
+        embed.add_field(
+            name=f"{_GOV_DEPT_EMOJI[key]} {label} ({len(members_with_role)})",
+            value=value,
+            inline=False,
+        )
+
+    embed.set_footer(text=f"{total} government member(s) total")
+    await interaction.followup.send(embed=embed)
 
 
 # ---------------------------------------------------------------------------
