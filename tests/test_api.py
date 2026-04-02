@@ -53,6 +53,28 @@ class TestIndexEndpoint:
             assert text == "would you kindly begone"
 
 
+class TestHealthEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_200_with_status_ok(self):
+        app = create_app(lambda: None, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"status": "ok"}
+
+
+class TestPingEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_200_with_pong(self):
+        app = create_app(lambda: None, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/ping")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"ping": "pong"}
+
+
 class TestRolesEndpoint:
     @pytest.mark.asyncio
     async def test_missing_api_key_returns_401(self):
