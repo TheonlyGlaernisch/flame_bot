@@ -129,6 +129,7 @@ def _alliance_url(alliance_id: int) -> str:
 def _nation_embed(
     nation: Nation,
     registered_discord: str | None = None,
+    note: str | None = None,
 ) -> discord.Embed:
     """Build a rich Discord embed for a PnW nation."""
     embed = discord.Embed(
@@ -189,6 +190,9 @@ def _nation_embed(
         embed.add_field(name="Discord", value=registered_discord, inline=True)
     elif nation.discord_tag:
         embed.add_field(name="PnW Discord", value=f"`{nation.discord_tag}`", inline=True)
+
+    if note:
+        embed.set_footer(text=note)
 
     return embed
 
@@ -1028,12 +1032,16 @@ async def gov(interaction: discord.Interaction) -> None:
         color=discord.Color.blurple(),
     )
 
+    # Fetch roles directly from the API so we're not relying on the guild cache,
+    # which may not be fully populated when the bot first starts up.
+    guild_roles = {r.id: r for r in await guild.fetch_roles()}
+
     total = 0
     for key, label in _GOV_DEPT_LABELS.items():
         role_id = config_roles[key]
         if not role_id:
             continue
-        role = guild.get_role(role_id)
+        role = guild_roles.get(role_id)
         if role is None:
             embed.add_field(
                 name=f"{_GOV_DEPT_EMOJI[key]} {label}",
