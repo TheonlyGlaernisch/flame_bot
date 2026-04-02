@@ -1183,6 +1183,38 @@ async def send_resources(
 
 
 # ---------------------------------------------------------------------------
+# /help
+# ---------------------------------------------------------------------------
+
+_HELP_COMMANDS = [
+    ("/register <nation_id>", "Link your Discord account to a PnW nation."),
+    ("/unregister", "Remove your PnW nation registration."),
+    ("/whois <query>", "Look up a nation by ID, name, or @mention."),
+    ("/alliance <query>", "Look up an alliance by ID or name."),
+    ("/gov", "Show members who hold a configured government role."),
+    ("/slots", "Show open defensive war slots for monitored alliances."),
+    ("/roles setup", "Map server roles to government departments. *(admin)*"),
+    ("/roles show", "Show the currently configured government roles."),
+    ("/config slots set <ids>", "Set alliance IDs monitored by /slots. *(admin)*"),
+    ("/config slots show", "Show configured /slots alliance IDs."),
+    ("/config slots clear", "Clear the /slots alliance configuration. *(admin)*"),
+    ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
+    ("/help", "Show this help message."),
+]
+
+
+@bot.tree.command(name="help", description="List all available bot commands.")
+async def help_command(interaction: discord.Interaction) -> None:
+    embed = discord.Embed(
+        title="Available Commands",
+        color=discord.Color.blurple(),
+    )
+    for name, description in _HELP_COMMANDS:
+        embed.add_field(name=name, value=description, inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
