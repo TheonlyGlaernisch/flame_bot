@@ -1082,7 +1082,20 @@ async def send_resources(
     steel: float | None = None,
     aluminum: float | None = None,
 ) -> None:
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
+
+    # Check that the invoking member holds the configured econ role (admins bypass).
+    guild_id = interaction.guild_id or 0
+    member = interaction.guild and interaction.guild.get_member(interaction.user.id)
+    is_admin = member and member.guild_permissions.administrator
+    if not is_admin:
+        econ_role_id = bot.db.get_gov_roles(guild_id).get("econ")
+        if not econ_role_id or not member or not any(r.id == econ_role_id for r in member.roles):
+            await interaction.followup.send(
+                "❌ You need the **Economics** role to use this command.",
+                ephemeral=True,
+            )
+            return
 
     raw: list[tuple[str, float | None]] = [
         ("money", money), ("food", food), ("coal", coal), ("oil", oil),
