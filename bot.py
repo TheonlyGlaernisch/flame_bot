@@ -169,12 +169,22 @@ def _nation_embed(
     # Average infrastructure estimate
     # PnW score = (cities-1)*100 + 10  [city score]
     #           + projects * 20         [project score, 20 pts each]
-    #           + total_infra / 400     [infra score, 1 pt per 400 infra]
+    #           + total_infra / 40      [infra score, 1 pt per 40 infra]
+    #           + military_score        [soldiers*0.0004 + tanks*0.025 + aircraft*0.3
+    #                                    + ships*1 + missiles*5 + nukes*15]
     # Solving for avg_infra:
-    #   avg_infra = (score - (cities-1)*100 - 10 - projects*20) * 400 / cities
+    #   avg_infra = (score - (cities-1)*100 - 10 - projects*20 - military_score) * 40 / cities
     if nation.num_cities > 0:
-        infra_score = nation.score - (nation.num_cities - 1) * 100 - 10 - nation.num_projects * 20
-        avg_infra = infra_score * 400 / nation.num_cities
+        military_score = (
+            nation.soldiers * 0.0004
+            + nation.tanks * 0.025
+            + nation.aircraft * 0.3
+            + nation.ships * 1.0
+            + nation.missiles * 5.0
+            + nation.nukes * 15.0
+        )
+        infra_score = nation.score - (nation.num_cities - 1) * 100 - 10 - nation.num_projects * 20 - military_score
+        avg_infra = infra_score * 40 / nation.num_cities
         embed.add_field(name="Avg Infra", value=f"{avg_infra:,.2f}", inline=True)
 
     # Use a live Discord relative timestamp when available (GraphQL path);
@@ -200,7 +210,9 @@ def _nation_embed(
             f"🪖 Soldiers: {pct(nation.soldiers, max_sol)}\n"
             f"⚔️ Tanks:    {pct(nation.tanks, max_tan)}\n"
             f"✈️ Aircraft: {pct(nation.aircraft, max_air)}\n"
-            f"🚢 Ships:    {pct(nation.ships, max_shi)}"
+            f"🚢 Ships:    {pct(nation.ships, max_shi)}\n"
+            f"🚀 Missiles: {nation.missiles:,}\n"
+            f"☢️ Nukes:    {nation.nukes:,}"
         )
         embed.add_field(name="Military", value=military_text, inline=False)
 
@@ -447,7 +459,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
             if member is None and interaction.guild is not None:
                 try:
                     member = await interaction.guild.fetch_member(target_id)
-                except discord.NotFound:
+                except discord.HTTPException:
                     member = None
             nation: Optional[Nation] = None
             if member is not None:
