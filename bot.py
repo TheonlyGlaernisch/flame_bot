@@ -158,10 +158,20 @@ def _nation_embed(
 
     embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
     embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
-    embed.add_field(name="Projects", value=str(nation.num_projects), inline=True)
+
+    # Projects: count + short abbreviations of built projects
+    if nation.projects_built:
+        projects_value = f"{nation.num_projects} — {', '.join(nation.projects_built)}"
+    else:
+        projects_value = "0"
+    embed.add_field(name="Projects", value=projects_value, inline=False)
 
     # Average infrastructure estimate
-    # Formula: (score - (cities-1)*100 - 10 - projects*20) * 400 / cities
+    # PnW score = (cities-1)*100 + 10  [city score]
+    #           + projects * 20         [project score, 20 pts each]
+    #           + total_infra / 400     [infra score, 1 pt per 400 infra]
+    # Solving for avg_infra:
+    #   avg_infra = (score - (cities-1)*100 - 10 - projects*20) * 400 / cities
     if nation.num_cities > 0:
         infra_score = nation.score - (nation.num_cities - 1) * 100 - 10 - nation.num_projects * 20
         avg_infra = infra_score * 400 / nation.num_cities

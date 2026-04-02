@@ -1,7 +1,7 @@
 """Thin async wrapper around the Politics and War GraphQL and REST APIs."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -39,8 +39,13 @@ class Nation:
     tanks: int = 0
     aircraft: int = 0
     ships: int = 0
-    # National projects
-    num_projects: int = 0
+    # National projects — list of short abbreviations for built projects
+    projects_built: list[str] = field(default_factory=list)
+
+    @property
+    def num_projects(self) -> int:
+        return len(self.projects_built)
+
     # Alliance info
     alliance_id: int = 0
     alliance_name: str = ""
@@ -79,7 +84,37 @@ _NATION_FIELDS = """
     tanks
     aircraft
     ships
-    num_projects
+    ironworks
+    bauxiteworks
+    arms_stockpile
+    emergency_gasoline_reserve
+    mass_irrigation
+    international_trade_center
+    missile_launch_pad
+    nuclear_research_facility
+    iron_dome
+    vital_defense_system
+    space_program
+    uranium_enrichment_program
+    social_security_system
+    advanced_city_planning
+    government_support_agency
+    research_and_development_center
+    propaganda_bureau
+    telecommunications_satellite
+    green_technologies
+    arable_land_agency
+    center_for_disease_control
+    clinical_research_center
+    urban_planning
+    advanced_engineering_corps
+    pirate_economy
+    recycling_initiative
+    specialized_police_training_program
+    metropolitan_planning
+    moon_landing
+    surveillance_network
+    nuclear_launch_facility
     alliance_id
     alliance_position
     alliance_seniority
@@ -87,6 +122,41 @@ _NATION_FIELDS = """
         name
     }
 """
+
+# Mapping of GraphQL field name → short abbreviation shown in /whois.
+_PROJECT_ABBREVS: dict[str, str] = {
+    "ironworks": "IW",
+    "bauxiteworks": "BW",
+    "arms_stockpile": "AS",
+    "emergency_gasoline_reserve": "EGR",
+    "mass_irrigation": "MI",
+    "international_trade_center": "ITC",
+    "missile_launch_pad": "MLP",
+    "nuclear_research_facility": "NRF",
+    "iron_dome": "ID",
+    "vital_defense_system": "VDS",
+    "space_program": "SP",
+    "uranium_enrichment_program": "UEP",
+    "social_security_system": "SSS",
+    "advanced_city_planning": "ACP",
+    "government_support_agency": "GSA",
+    "research_and_development_center": "RDC",
+    "propaganda_bureau": "PB",
+    "telecommunications_satellite": "TS",
+    "green_technologies": "GT",
+    "arable_land_agency": "ALA",
+    "center_for_disease_control": "CDC",
+    "clinical_research_center": "CRC",
+    "urban_planning": "UP",
+    "advanced_engineering_corps": "AEC",
+    "pirate_economy": "PE",
+    "recycling_initiative": "RI",
+    "specialized_police_training_program": "SPTP",
+    "metropolitan_planning": "MP",
+    "moon_landing": "ML",
+    "surveillance_network": "SN",
+    "nuclear_launch_facility": "NLF",
+}
 
 _ALLIANCE_MEMBER_FIELDS = """
     id
@@ -158,6 +228,7 @@ class PnWClient:
     def _parse_nation(n: dict[str, Any]) -> Nation:
         alliance = n.get("alliance") or {}
         la_str = n.get("last_active", "") or ""
+        projects_built = sorted(abbr for field_name, abbr in _PROJECT_ABBREVS.items() if n.get(field_name))
         return Nation(
             nation_id=int(n["id"]),
             nation_name=n.get("nation_name", ""),
@@ -171,7 +242,7 @@ class PnWClient:
             tanks=int(n.get("tanks") or 0),
             aircraft=int(n.get("aircraft") or 0),
             ships=int(n.get("ships") or 0),
-            num_projects=int(n.get("num_projects") or 0),
+            projects_built=projects_built,
             alliance_id=int(n.get("alliance_id") or 0),
             alliance_name=alliance.get("name", "") or "",
             alliance_position=n.get("alliance_position", "") or "",
