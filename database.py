@@ -71,3 +71,21 @@ class Database:
             {"$set": {"guild_id": str(guild_id), "slots_alliances": alliance_ids}},
             upsert=True,
         )
+
+    # Gov-role config helpers ---------------------------------------------------
+
+    _GOV_ROLE_KEYS = ("econ", "milcom", "ia", "gov")
+
+    def get_gov_roles(self, guild_id: int) -> dict[str, int | None]:
+        """Return the Discord role IDs configured for each gov department, or None if unset."""
+        doc = self._guild_config.find_one({"guild_id": str(guild_id)}, {"_id": 0})
+        stored = (doc or {}).get("gov_roles", {})
+        return {k: (int(stored[k]) if stored.get(k) else None) for k in self._GOV_ROLE_KEYS}
+
+    def set_gov_roles(self, guild_id: int, roles: dict[str, int | None]) -> None:
+        """Persist the gov-department role mapping for a guild."""
+        self._guild_config.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": {"guild_id": str(guild_id), "gov_roles": roles}},
+            upsert=True,
+        )

@@ -37,6 +37,27 @@ Commands
     Show an embed listing all non-vacation-mode members of the configured
     alliances with their score, city count, and open defensive slots.
     Includes sort buttons to toggle between open-slots and score ordering.
+    The sort buttons edit the original embeds in-place.
+
+/roles setup [econ] [milcom] [ia] [gov]
+    (Admin only) Map existing server roles to government departments:
+    Economics, Military Command, Internal Affairs, and Basic Gov.
+    All parameters are optional; omitting one leaves that department unchanged.
+
+/roles show
+    Show the currently configured government department roles.
+
+/gov
+    Show an embed listing all server members who hold a configured government
+    role, organised by department (Economics, Military Command, Internal
+    Affairs, Basic Gov).
+
+/send <receiver> [sender] [bank_note] [money] [food] [coal] [oil] [uranium] [iron]
+      [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
+    Compose a Locutus /transfer resources command for a resource transfer.
+    receiver is a Discord ping or nation ID; bank_note defaults to #grant.
+    Posts an embed with all details and the pre-formatted command:
+    /transfer resources receiver:<id> transfer:{"money":1000,...} bank_note:#grant
 
 """
 from __future__ import annotations
@@ -741,30 +762,39 @@ def _build_slots_embeds(
 class SlotsView(discord.ui.View):
     """Sort-toggle buttons attached to the /slots response."""
 
-    def __init__(self, members: list[Nation], war_counts: dict[int, int]) -> None:
+    def __init__(
+        self,
+        members: list[Nation],
+        war_counts: dict[int, int],
+        data_messages: list[discord.Message],
+    ) -> None:
         super().__init__(timeout=600)
         self.members = members
         self.war_counts = war_counts
+        self.data_messages = data_messages
 
-    async def _send_sorted(
+    async def _resort(
         self, interaction: discord.Interaction, sort_key: str
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         embeds = _build_slots_embeds(self.members, self.war_counts, sort_key)
-        for i in range(0, len(embeds), 10):
-            await interaction.followup.send(embeds=embeds[i : i + 10], ephemeral=True)
+        BATCH = 10
+        batches = [embeds[i : i + BATCH] for i in range(0, len(embeds), BATCH)]
+        for i, msg in enumerate(self.data_messages):
+            if i < len(batches):
+                await msg.edit(embeds=batches[i])
 
     @discord.ui.button(label="Sort: Open Slots", style=discord.ButtonStyle.primary, emoji="🛡️")
     async def sort_slots(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._send_sorted(interaction, "slots")
+        await self._resort(interaction, "slots")
 
     @discord.ui.button(label="Sort: Score", style=discord.ButtonStyle.secondary, emoji="⭐")
     async def sort_score(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._send_sorted(interaction, "score")
+        await self._resort(interaction, "score")
 
 
 # ---------------------------------------------------------------------------
@@ -815,14 +845,306 @@ async def slots(interaction: discord.Interaction) -> None:
     # Default: sorted by open slots descending (most vulnerable first)
     embeds = _build_slots_embeds(members, war_counts, sort_key="slots")
 
-    # Send data embeds (up to 10 per message)
+    # Send data embeds (up to 10 per message) and collect the Message objects
+    # so the sort buttons can edit them in-place.
     BATCH = 10
+    data_messages: list[discord.Message] = []
     for i in range(0, len(embeds), BATCH):
-        await interaction.followup.send(embeds=embeds[i : i + BATCH])
+        msg = await interaction.followup.send(embeds=embeds[i : i + BATCH], wait=True)
+        data_messages.append(msg)
 
     # Send sort-toggle control panel
-    view = SlotsView(members, war_counts)
+    view = SlotsView(members, war_counts, data_messages)
     await interaction.followup.send("**Sort:**", view=view)
+
+
+# ---------------------------------------------------------------------------
+# /roles  (command group)
+# ---------------------------------------------------------------------------
+
+_GOV_DEPT_LABELS: dict[str, str] = {
+    "econ": "Economics",
+    "milcom": "Military Command",
+    "ia": "Internal Affairs",
+    "gov": "Basic Gov",
+}
+
+roles_group = app_commands.Group(
+    name="roles",
+    description="Government role configuration.",
+)
+bot.tree.add_command(roles_group)
+
+
+@roles_group.command(
+    name="setup",
+    description="Map existing server roles to government departments (admin only).",
+)
+@app_commands.describe(
+    econ="Role that counts as Economics.",
+    milcom="Role that counts as Military Command.",
+    ia="Role that counts as Internal Affairs.",
+    gov="Role that counts as Basic Gov.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def roles_setup(
+    interaction: discord.Interaction,
+    econ: discord.Role | None = None,
+    milcom: discord.Role | None = None,
+    ia: discord.Role | None = None,
+    gov: discord.Role | None = None,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    guild_id = interaction.guild_id or 0
+    current = bot.db.get_gov_roles(guild_id)
+
+    updates = {
+        "econ": econ.id if econ else current["econ"],
+        "milcom": milcom.id if milcom else current["milcom"],
+        "ia": ia.id if ia else current["ia"],
+        "gov": gov.id if gov else current["gov"],
+    }
+    bot.db.set_gov_roles(guild_id, updates)
+    log.info("Guild %d: gov roles updated to %s by %s", guild_id, updates, interaction.user)
+
+    guild = interaction.guild
+    lines: list[str] = []
+    for key, label in _GOV_DEPT_LABELS.items():
+        role_id = updates[key]
+        if role_id and guild:
+            role = guild.get_role(role_id)
+            lines.append(f"**{label}:** {role.mention if role else f'<@&{role_id}>'}")
+        else:
+            lines.append(f"**{label}:** *(not set)*")
+
+    await interaction.followup.send(
+        "✅ Government role configuration updated:\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@roles_setup.error
+async def roles_setup_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+@roles_group.command(
+    name="show",
+    description="Show the currently configured government department roles.",
+)
+async def roles_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    config_roles = bot.db.get_gov_roles(guild_id)
+    guild = interaction.guild
+
+    lines: list[str] = []
+    for key, label in _GOV_DEPT_LABELS.items():
+        role_id = config_roles[key]
+        if role_id and guild:
+            role = guild.get_role(role_id)
+            lines.append(f"**{label}:** {role.mention if role else f'<@&{role_id}>'}")
+        else:
+            lines.append(f"**{label}:** *(not set)*")
+
+    await interaction.followup.send(
+        "ℹ️ Current government role configuration:\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /gov
+# ---------------------------------------------------------------------------
+
+# Emoji prefix for each department shown in the /gov embed.
+_GOV_DEPT_EMOJI: dict[str, str] = {
+    "econ": "💰",
+    "milcom": "⚔️",
+    "ia": "🤝",
+    "gov": "🏛️",
+}
+
+
+@bot.tree.command(
+    name="gov",
+    description="Show server members who hold a configured government role.",
+)
+async def gov(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("❌ This command can only be used inside a server.")
+        return
+
+    guild_id = interaction.guild_id or 0
+    config_roles = bot.db.get_gov_roles(guild_id)
+
+    if not any(config_roles.values()):
+        await interaction.followup.send(
+            "ℹ️ No government roles configured yet. An admin can use `/roles setup` to set them up."
+        )
+        return
+
+    embed = discord.Embed(
+        title="Government",
+        color=discord.Color.blurple(),
+    )
+
+    total = 0
+    for key, label in _GOV_DEPT_LABELS.items():
+        role_id = config_roles[key]
+        if not role_id:
+            continue
+        role = guild.get_role(role_id)
+        if role is None:
+            embed.add_field(
+                name=f"{_GOV_DEPT_EMOJI[key]} {label}",
+                value="*(role not found)*",
+                inline=False,
+            )
+            continue
+
+        members_with_role = [m for m in role.members if not m.bot]
+        total += len(members_with_role)
+        if members_with_role:
+            value = " ".join(m.mention for m in sorted(members_with_role, key=lambda m: m.display_name.lower()))
+        else:
+            value = "*(no members)*"
+
+        embed.add_field(
+            name=f"{_GOV_DEPT_EMOJI[key]} {label} ({len(members_with_role)})",
+            value=value,
+            inline=False,
+        )
+
+    embed.set_footer(text=f"{total} government member(s) total")
+    await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /send
+# ---------------------------------------------------------------------------
+
+# Resource keys accepted by Locutus /transfer resources (JSON field names).
+_LOCUTUS_RES_KEYS = (
+    "money", "food", "coal", "oil", "uranium", "iron",
+    "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum",
+)
+
+
+@bot.tree.command(
+    name="send",
+    description="Compose a Locutus /transfer resources command to send resources to a nation.",
+)
+@app_commands.describe(
+    receiver="Receiving nation – Discord ping or nation ID.",
+    sender="Sender nation name or ID (optional, for record-keeping).",
+    bank_note="Bank note attached to the transfer (defaults to #grant).",
+    money="Amount of money.",
+    food="Amount of food.",
+    coal="Amount of coal.",
+    oil="Amount of oil.",
+    uranium="Amount of uranium.",
+    iron="Amount of iron.",
+    bauxite="Amount of bauxite.",
+    lead="Amount of lead.",
+    gasoline="Amount of gasoline.",
+    munitions="Amount of munitions.",
+    steel="Amount of steel.",
+    aluminum="Amount of aluminum.",
+)
+async def send_resources(
+    interaction: discord.Interaction,
+    receiver: str,
+    sender: str | None = None,
+    bank_note: str = "#grant",
+    money: float | None = None,
+    food: float | None = None,
+    coal: float | None = None,
+    oil: float | None = None,
+    uranium: float | None = None,
+    iron: float | None = None,
+    bauxite: float | None = None,
+    lead: float | None = None,
+    gasoline: float | None = None,
+    munitions: float | None = None,
+    steel: float | None = None,
+    aluminum: float | None = None,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    # Check that the invoking member holds the configured econ role (admins bypass).
+    guild_id = interaction.guild_id or 0
+    member = interaction.guild and interaction.guild.get_member(interaction.user.id)
+    is_admin = member and member.guild_permissions.administrator
+    if not is_admin:
+        econ_role_id = bot.db.get_gov_roles(guild_id).get("econ")
+        if not econ_role_id or not member or not any(r.id == econ_role_id for r in member.roles):
+            await interaction.followup.send(
+                "❌ You need the **Economics** role to use this command.",
+                ephemeral=True,
+            )
+            return
+
+    raw: list[tuple[str, float | None]] = [
+        ("money", money), ("food", food), ("coal", coal), ("oil", oil),
+        ("uranium", uranium), ("iron", iron), ("bauxite", bauxite),
+        ("lead", lead), ("gasoline", gasoline), ("munitions", munitions),
+        ("steel", steel), ("aluminum", aluminum),
+    ]
+    resources: dict[str, float] = {
+        name: val for name, val in raw if val is not None and val > 0
+    }
+
+    if not resources:
+        await interaction.followup.send(
+            "❌ Please provide at least one resource amount greater than zero.",
+            ephemeral=True,
+        )
+        return
+
+    def _fmt_amount(v: float) -> str:
+        return str(int(v)) if v == int(v) else str(v)
+
+    # Build the JSON transfer payload: {"money":1000,"food":500,...}
+    # Use integer values where possible to keep the string clean.
+    transfer_json = "{" + ",".join(
+        f'"{k}":{_fmt_amount(v)}' for k, v in resources.items()
+    ) + "}"
+
+    locutus_cmd = (
+        f"/transfer resources receiver:{receiver} "
+        f"transfer:{transfer_json} bank_note:{bank_note}"
+    )
+
+    embed = discord.Embed(
+        title="💸 Resource Transfer Request",
+        color=discord.Color.green(),
+    )
+    if sender:
+        embed.add_field(name="From", value=sender, inline=True)
+    embed.add_field(name="To", value=receiver, inline=True)
+    embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Bank note", value=bank_note, inline=True)
+
+    res_lines = [
+        f"**{name.title()}:** {_fmt_amount(val)}" for name, val in resources.items()
+    ]
+    embed.add_field(name="Resources", value="\n".join(res_lines), inline=False)
+    embed.add_field(name="Locutus Command", value=f"```{locutus_cmd}```", inline=False)
+
+    await interaction.followup.send(embed=embed)
 
 
 # ---------------------------------------------------------------------------
