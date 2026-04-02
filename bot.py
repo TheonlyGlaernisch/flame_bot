@@ -23,9 +23,6 @@ Commands
     Show an embed listing all non-vacation-mode members of the configured
     alliances with their score, city count, and open defensive slots.
 
-/check_roles
-    Re-evaluate and sync bar3 roles for the calling user.
-    Used by bar3 to decide whether the logged-in Discord user has access.
 """
 from __future__ import annotations
 
@@ -167,7 +164,6 @@ class FlameBot(discord.Client):
     async def _start_api(self) -> None:
         app = create_app(
             guild_getter=lambda: self.get_guild(config.GUILD_ID),
-            db=self.db,
             api_key=config.API_KEY,  # type: ignore[arg-type]
             role_config=RoleConfig(
                 verified_role_id=config.VERIFIED_ROLE_ID,
@@ -589,105 +585,6 @@ async def slots(interaction: discord.Interaction) -> None:
     BATCH = 10
     for i in range(0, len(embeds), BATCH):
         await interaction.followup.send(embeds=embeds[i : i + BATCH])
-
-
-# ---------------------------------------------------------------------------
-# /check_roles
-# ---------------------------------------------------------------------------
-
-
-@bot.tree.command(
-    name="check_roles",
-    description="Sync your bar3 roles so bar3 can verify your access.",
-)
-async def check_roles(interaction: discord.Interaction) -> None:
-    await interaction.response.defer()
-
-    guild = interaction.guild
-    if guild is None:
-        await interaction.followup.send("❌ This command must be used in a server.")
-        return
-
-    member = guild.get_member(interaction.user.id)
-    if member is None:
-        await interaction.followup.send("❌ Could not resolve your server membership.")
-        return
-
-    row = bot.db.get_by_discord_id(interaction.user.id)
-    if row is None:
-        await interaction.followup.send(
-            "ℹ️ You have not registered yet. Use `/register` to link your nation first.",
-        )
-        return
-
-    nation_id = row["nation_id"]
-
-    # Fetch nation to confirm it still exists
-    try:
-        nation = await bot.pnw.get_nation(nation_id)
-    except Exception as exc:
-        await interaction.followup.send(
-            f"❌ Could not reach the PnW API: {exc}"
-        )
-        return
-
-    if nation is None:
-        await interaction.followup.send(
-            f"⚠️ Nation ID `{nation_id}` no longer exists. Roles were not updated.",
-        )
-        return
-
-    added: list[str] = []
-    already_had: list[str] = []
-
-    # Ensure the Verified role is present
-    verified_role = _get_role(guild, config.VERIFIED_ROLE_ID)
-    if verified_role:
-        if verified_role not in member.roles:
-            try:
-                await member.add_roles(verified_role, reason=f"{BOT_NAME}: /check_roles")
-                added.append(verified_role.name)
-            except discord.Forbidden:
-                log.warning("Missing permission to assign role %s", verified_role)
-        else:
-            already_had.append(verified_role.name)
-
-    # bar3 client role
-    bar3_client_role = _get_role(guild, config.BAR3_CLIENT_ROLE_ID)
-    if bar3_client_role:
-        if bar3_client_role not in member.roles:
-            try:
-                await member.add_roles(bar3_client_role, reason=f"{BOT_NAME}: /check_roles")
-                added.append(bar3_client_role.name)
-            except discord.Forbidden:
-                log.warning("Missing permission to assign role %s", bar3_client_role)
-        else:
-            already_had.append(bar3_client_role.name)
-
-    # bar3 server role
-    bar3_server_role = _get_role(guild, config.BAR3_SERVER_ROLE_ID)
-    if bar3_server_role:
-        if bar3_server_role not in member.roles:
-            try:
-                await member.add_roles(bar3_server_role, reason=f"{BOT_NAME}: /check_roles")
-                added.append(bar3_server_role.name)
-            except discord.Forbidden:
-                log.warning("Missing permission to assign role %s", bar3_server_role)
-        else:
-            already_had.append(bar3_server_role.name)
-
-    parts: list[str] = [
-        f"✅ Role check complete for {member.mention} "
-        f"(nation: **{nation.nation_name}**, ID: `{nation_id}`)."
-    ]
-    if added:
-        parts.append(f"**Added:** {', '.join(added)}")
-    if already_had:
-        parts.append(f"**Already had:** {', '.join(already_had)}")
-    if not added and not already_had:
-        parts.append("No configured roles to assign.")
-
-    await interaction.followup.send("\n".join(parts))
 
 
 # ---------------------------------------------------------------------------

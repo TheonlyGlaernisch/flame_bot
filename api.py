@@ -13,13 +13,15 @@ GET /
 GET /api/roles/{discord_id}
     Returns the bar3 role status for the given Discord user ID.
 
+    Roles are manually assigned and stripped in Discord; no bot registration
+    is required.  The endpoint simply reflects the member's current roles.
+
     Requires the ``X-API-Key`` request header to match the ``API_KEY``
     environment variable.
 
     Response (200 OK):
     {
         "discord_id": "123456789",
-        "registered": true,
         "roles": {
             "verified":    true,
             "bar3_client": false,
@@ -39,8 +41,6 @@ from dataclasses import dataclass
 import discord
 from aiohttp import web
 
-from database import Database
-
 log = logging.getLogger("flame_bot.api")
 
 
@@ -59,7 +59,6 @@ def _check_api_key(request: web.Request, api_key: str) -> bool:
 
 def create_app(
     guild_getter,         # callable() -> discord.Guild | None
-    db: Database,
     api_key: str,
     role_config: RoleConfig | None = None,
 ) -> web.Application:
@@ -72,8 +71,6 @@ def create_app(
         (or ``None`` if the bot isn't ready yet).  Keeping it as a callable
         rather than a direct reference makes the app easy to test without a
         real Discord connection.
-    db:
-        The shared ``Database`` instance.
     api_key:
         The secret that callers must supply via the ``X-API-Key`` header.
     role_config:
@@ -96,9 +93,6 @@ def create_app(
 
         discord_id = int(discord_id_str)
 
-        row = db.get_by_discord_id(discord_id)
-        registered = row is not None
-
         roles: dict[str, bool] = {
             "verified": False,
             "bar3_client": False,
@@ -120,7 +114,6 @@ def create_app(
         return web.json_response(
             {
                 "discord_id": str(discord_id),
-                "registered": registered,
                 "roles": roles,
             }
         )
