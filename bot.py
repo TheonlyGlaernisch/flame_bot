@@ -471,6 +471,16 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
                         nation.discord_tag, member.name
                     ):
                         nation = None
+                    # Also try the legacy "username#discriminator" format — many
+                    # PnW players stored their old Discord tag before Discord
+                    # migrated to the new username system.
+                    if nation is None and member.discriminator and member.discriminator != "0":
+                        legacy_tag = f"{member.name}#{member.discriminator}"
+                        nation = await bot.pnw.get_nation_by_discord_tag(legacy_tag)
+                        if nation is not None and not bot.pnw.discord_matches(
+                            nation.discord_tag, legacy_tag
+                        ):
+                            nation = None
                 except Exception:
                     nation = None
             if nation is not None:

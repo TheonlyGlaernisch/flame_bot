@@ -468,5 +468,10 @@ class PnWClient:
         if not stored:
             return False
         check = username.strip().lower()
-        # Accept "username" or "username#0000" stored in the nation field
-        return stored == check or stored.startswith(check + "#")
+        # Accept "username" or "username#0000" stored in the nation field,
+        # and also accept the reverse (check includes a discriminator suffix).
+        return (
+            stored == check
+            or stored.startswith(check + "#")
+            or check.startswith(stored + "#")
+        )
