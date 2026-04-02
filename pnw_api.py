@@ -84,8 +84,8 @@ _NATION_FIELDS = """
     tanks
     aircraft
     ships
-    ironworks
-    bauxiteworks
+    iron_works
+    bauxite_works
     arms_stockpile
     emergency_gasoline_reserve
     mass_irrigation
@@ -96,15 +96,13 @@ _NATION_FIELDS = """
     vital_defense_system
     space_program
     uranium_enrichment_program
-    social_security_system
-    advanced_city_planning
+    advanced_urban_planning
     government_support_agency
     research_and_development_center
     propaganda_bureau
     telecommunications_satellite
     green_technologies
     arable_land_agency
-    center_for_disease_control
     clinical_research_center
     urban_planning
     advanced_engineering_corps
@@ -125,8 +123,8 @@ _NATION_FIELDS = """
 
 # Mapping of GraphQL field name → short abbreviation shown in /whois.
 _PROJECT_ABBREVS: dict[str, str] = {
-    "ironworks": "IW",
-    "bauxiteworks": "BW",
+    "iron_works": "IW",
+    "bauxite_works": "BW",
     "arms_stockpile": "AS",
     "emergency_gasoline_reserve": "EGR",
     "mass_irrigation": "MI",
@@ -137,15 +135,13 @@ _PROJECT_ABBREVS: dict[str, str] = {
     "vital_defense_system": "VDS",
     "space_program": "SP",
     "uranium_enrichment_program": "UEP",
-    "social_security_system": "SSS",
-    "advanced_city_planning": "ACP",
+    "advanced_urban_planning": "ACP",
     "government_support_agency": "GSA",
     "research_and_development_center": "RDC",
     "propaganda_bureau": "PB",
     "telecommunications_satellite": "TS",
     "green_technologies": "GT",
     "arable_land_agency": "ALA",
-    "center_for_disease_control": "CDC",
     "clinical_research_center": "CRC",
     "urban_planning": "UP",
     "advanced_engineering_corps": "AEC",
