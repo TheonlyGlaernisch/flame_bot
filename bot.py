@@ -158,7 +158,7 @@ def _nation_embed(
 
         military_text = (
             f"🪖 Soldiers: {pct(nation.soldiers, max_sol)}\n"
-            f"⚙️ Tanks:    {pct(nation.tanks, max_tan)}\n"
+            f"⚔️ Tanks:    {pct(nation.tanks, max_tan)}\n"
             f"✈️ Aircraft: {pct(nation.aircraft, max_air)}\n"
             f"🚢 Ships:    {pct(nation.ships, max_shi)}"
         )

@@ -701,6 +701,20 @@ class TestParseAlliance:
         assert info.num_members == 2
         assert info.num_applicants == 1
 
+    def test_vacation_mode_members_excluded_from_active_count(self):
+        data = {
+            **_ALLIANCE_DATA,
+            "nations": [
+                {"id": "1", "num_cities": 20, "alliance_position": "MEMBER", "vacation_mode_turns": 0},
+                {"id": "2", "num_cities": 10, "alliance_position": "MEMBER", "vacation_mode_turns": 3},
+                {"id": "3", "num_cities": 5,  "alliance_position": "MEMBER", "vacation_mode_turns": 99},
+            ],
+        }
+        info = PnWClient._parse_alliance(data)
+        # Only id=1 is active; ids 2 and 3 are in vmode
+        assert info.num_members == 1
+        assert info.total_cities == 20
+
     def test_total_and_avg_cities(self):
         info = PnWClient._parse_alliance(_ALLIANCE_DATA)
         # Active members: id=1 (20 cities) + id=2 (15 cities) = 35 total, avg 17.5
