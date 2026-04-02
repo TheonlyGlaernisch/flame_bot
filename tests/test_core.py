@@ -163,6 +163,8 @@ _NATION_DATA = {
     "ships": 80,
     "alliance_id": "42",
     "alliance": {"name": "Test Alliance"},
+    "alliance_position": "MEMBER",
+    "alliance_seniority": 45,
 }
 
 
@@ -195,6 +197,9 @@ class TestGetNation:
         assert nation.ships == 80
         assert nation.alliance_id == 42
         assert nation.alliance_name == "Test Alliance"
+        assert nation.alliance_position == "MEMBER"
+        assert nation.alliance_seniority == 45
+        assert nation.last_active_unix != 0  # ISO string was parsed to a timestamp
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_data(self):
@@ -665,3 +670,116 @@ class TestGetNationRest:
         assert nation is not None
         assert nation.minutes_since_active == 0
         assert nation.last_active == ""
+
+
+# ---------------------------------------------------------------------------
+# PnWClient._parse_alliance / get_alliance_by_id tests
+# ---------------------------------------------------------------------------
+
+_ALLIANCE_DATA = {
+    "id": "7",
+    "name": "The Rose",
+    "acronym": "Rose",
+    "score": 250000.0,
+    "average_score": 1250.0,
+    "color": "pink",
+    "flag": "https://example.com/flag.png",
+    "discord_link": "https://discord.gg/example",
+    "nations": [
+        {"id": "1", "num_cities": 20, "alliance_position": "MEMBER", "vacation_mode_turns": 0},
+        {"id": "2", "num_cities": 15, "alliance_position": "OFFICER", "vacation_mode_turns": 0},
+        {"id": "3", "num_cities": 10, "alliance_position": "APPLICANT", "vacation_mode_turns": 0},
+        {"id": "4", "num_cities": 25, "alliance_position": "MEMBER", "vacation_mode_turns": 5},
+    ],
+}
+
+
+class TestParseAlliance:
+    def test_member_and_applicant_counts(self):
+        info = PnWClient._parse_alliance(_ALLIANCE_DATA)
+        # id=4 is in vacation mode, id=3 is applicant → 2 active members
+        assert info.num_members == 2
+        assert info.num_applicants == 1
+
+    def test_total_and_avg_cities(self):
+        info = PnWClient._parse_alliance(_ALLIANCE_DATA)
+        # Active members: id=1 (20 cities) + id=2 (15 cities) = 35 total, avg 17.5
+        assert info.total_cities == 35
+        assert info.avg_cities == 17.5
+
+    def test_basic_fields(self):
+        info = PnWClient._parse_alliance(_ALLIANCE_DATA)
+        assert info.alliance_id == 7
+        assert info.name == "The Rose"
+        assert info.acronym == "Rose"
+        assert info.score == 250000.0
+        assert info.color == "pink"
+        assert info.discord_link == "https://discord.gg/example"
+
+    def test_empty_nations_list(self):
+        data = {**_ALLIANCE_DATA, "nations": []}
+        info = PnWClient._parse_alliance(data)
+        assert info.num_members == 0
+        assert info.num_applicants == 0
+        assert info.total_cities == 0
+        assert info.avg_cities == 0.0
+
+
+class TestGetAllianceById:
+    @pytest.mark.asyncio
+    async def test_returns_alliance_on_success(self):
+        mock_response = {"data": {"alliances": {"data": [_ALLIANCE_DATA]}}}
+        client = PnWClient(api_key="dummy")
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_id(7)
+        assert info is not None
+        assert info.alliance_id == 7
+        assert info.name == "The Rose"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self):
+        mock_response = {"data": {"alliances": {"data": []}}}
+        client = PnWClient(api_key="dummy")
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_id(9999)
+        assert info is None
+
+
+class TestGetAllianceByName:
+    @pytest.mark.asyncio
+    async def test_returns_alliance_on_match(self):
+        mock_response = {"data": {"alliances": {"data": [_ALLIANCE_DATA]}}}
+        client = PnWClient(api_key="dummy")
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_name("The Rose")
+        assert info is not None
+        assert info.name == "The Rose"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self):
+        mock_response = {"data": {"alliances": {"data": []}}}
+        client = PnWClient(api_key="dummy")
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_name("Nobody")
+        assert info is None
+
+
+class TestParseLastActiveUnix:
+    def test_iso_with_timezone(self):
+        from pnw_api import _parse_last_active_unix
+        ts = _parse_last_active_unix("2024-03-20T12:00:00+00:00")
+        assert ts > 0
+
+    def test_iso_without_timezone_treated_as_utc(self):
+        from pnw_api import _parse_last_active_unix
+        ts_with = _parse_last_active_unix("2024-03-20T12:00:00+00:00")
+        ts_without = _parse_last_active_unix("2024-03-20T12:00:00")
+        assert ts_with == ts_without
+
+    def test_empty_string_returns_zero(self):
+        from pnw_api import _parse_last_active_unix
+        assert _parse_last_active_unix("") == 0
+
+    def test_invalid_string_returns_zero(self):
+        from pnw_api import _parse_last_active_unix
+        assert _parse_last_active_unix("not a date") == 0

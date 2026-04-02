@@ -32,6 +32,8 @@ GET /api/roles/{discord_id}
     Error responses:
     • 401  { "error": "Unauthorized" }   — missing or wrong API key
     • 400  { "error": "Invalid discord_id" }
+    • 503  { "error": "Bot not ready" }  — guild cache not populated yet
+                                            (safe to retry after a short delay)
 """
 from __future__ import annotations
 
@@ -100,16 +102,21 @@ def create_app(
         }
 
         guild: discord.Guild | None = guild_getter()
-        if guild is not None:
-            member = guild.get_member(discord_id)
-            if member is not None:
-                member_role_ids = {r.id for r in member.roles}
-                if role_config.verified_role_id and role_config.verified_role_id in member_role_ids:
-                    roles["verified"] = True
-                if role_config.bar3_client_role_id and role_config.bar3_client_role_id in member_role_ids:
-                    roles["bar3_client"] = True
-                if role_config.bar3_server_role_id and role_config.bar3_server_role_id in member_role_ids:
-                    roles["bar3_server"] = True
+        if guild is None:
+            return web.json_response(
+                {"error": "Bot not ready"},
+                status=503,
+            )
+
+        member = guild.get_member(discord_id)
+        if member is not None:
+            member_role_ids = {r.id for r in member.roles}
+            if role_config.verified_role_id and role_config.verified_role_id in member_role_ids:
+                roles["verified"] = True
+            if role_config.bar3_client_role_id and role_config.bar3_client_role_id in member_role_ids:
+                roles["bar3_client"] = True
+            if role_config.bar3_server_role_id and role_config.bar3_server_role_id in member_role_ids:
+                roles["bar3_server"] = True
 
         return web.json_response(
             {

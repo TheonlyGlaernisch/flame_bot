@@ -84,8 +84,22 @@ class TestRolesEndpoint:
             assert data["error"] == "Invalid discord_id"
 
     @pytest.mark.asyncio
-    async def test_user_not_in_guild(self):
+    async def test_guild_not_ready_returns_503(self):
+        """Guild is None (bot not yet ready) → 503 so bar3 can retry."""
         app = create_app(lambda: None, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/roles/999", headers={"X-API-Key": API_KEY}
+            )
+            assert resp.status == 503
+            data = await resp.json()
+            assert data["error"] == "Bot not ready"
+
+    @pytest.mark.asyncio
+    async def test_user_not_in_guild_returns_all_false(self):
+        """Guild is available but user is not a member — all roles False."""
+        guild = _make_guild(discord_id=None)  # get_member always returns None
+        app = create_app(lambda: guild, API_KEY)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
                 "/api/roles/999", headers={"X-API-Key": API_KEY}
@@ -98,19 +112,6 @@ class TestRolesEndpoint:
                 "bar3_client": False,
                 "bar3_server": False,
             }
-
-    @pytest.mark.asyncio
-    async def test_user_not_in_guild_cache(self):
-        """Guild is not available (bot not ready) — roles stay False."""
-        app = create_app(lambda: None, API_KEY)
-        async with TestClient(TestServer(app)) as client:
-            resp = await client.get(
-                "/api/roles/111", headers={"X-API-Key": API_KEY}
-            )
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["roles"]["verified"] is False
-            assert data["roles"]["bar3_client"] is False
 
     @pytest.mark.asyncio
     async def test_user_with_bar3_client_role(self):
@@ -154,8 +155,9 @@ class TestRolesEndpoint:
             }
 
     @pytest.mark.asyncio
-    async def test_correct_api_key_returns_200(self):
-        app = create_app(lambda: None, API_KEY)
+    async def test_correct_api_key_with_ready_guild_returns_200(self):
+        guild = _make_guild(discord_id=None)  # guild present, user not in it
+        app = create_app(lambda: guild, API_KEY)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
                 "/api/roles/1", headers={"X-API-Key": API_KEY}

@@ -8,20 +8,35 @@ Commands
     The bot verifies that your Discord username appears in the nation's
     in-game Discord field before accepting the registration.
 
+/unregister
+    Remove your own registration.
+
 /whois <query>
     Unified nation look-up command.
     • Numeric query  → fetch that nation from the PnW API by ID.
     • @mention       → look up the mentioned member's registered nation.
     • Text           → search PnW by nation name, then fall back to
                        looking up a Discord username in the local database.
-    Response is a rich embed including military capacity percentages.
+    Response is a rich embed including alliance position, seniority, and
+    military capacity percentages.
 
-/config slots <alliance_ids>
+/alliance <query>
+    Look up a Politics and War alliance by ID or name.
+    Returns an embed with score, member count, avg cities, and more.
+
+/config slots set <alliance_ids>
     (Admin only) Set the alliance IDs monitored by /slots.
+
+/config slots show
+    Show the currently configured /slots alliance IDs.
+
+/config slots clear
+    (Admin only) Clear the /slots alliance configuration.
 
 /slots
     Show an embed listing all non-vacation-mode members of the configured
     alliances with their score, city count, and open defensive slots.
+    Includes sort buttons to toggle between open-slots and score ordering.
 
 """
 from __future__ import annotations
@@ -42,6 +57,7 @@ from pnw_api import (
     MAX_SHIPS_PER_CITY,
     MAX_SOLDIERS_PER_CITY,
     MAX_TANKS_PER_CITY,
+    AllianceInfo,
     Nation,
     PnWClient,
 )
@@ -85,6 +101,10 @@ def _nation_url(nation_id: int) -> str:
     return f"https://politicsandwar.com/nation/id={nation_id}/"
 
 
+def _alliance_url(alliance_id: int) -> str:
+    return f"https://politicsandwar.com/alliance/id={alliance_id}"
+
+
 def _nation_embed(
     nation: Nation,
     registered_discord: str | None = None,
@@ -98,13 +118,30 @@ def _nation_embed(
 
     embed.add_field(name="Leader", value=nation.leader_name or "—", inline=True)
 
-    alliance_val = nation.alliance_name or (str(nation.alliance_id) if nation.alliance_id else "None")
+    # Alliance — hyperlinked name with position + seniority on the second line
+    if nation.alliance_id:
+        alliance_label = nation.alliance_name or str(nation.alliance_id)
+        alliance_val = f"[{alliance_label}]({_alliance_url(nation.alliance_id)})"
+    else:
+        alliance_val = "None"
+
+    pos = nation.alliance_position
+    if pos and pos not in ("NOALLIANCE", ""):
+        pos_line = pos.title()
+        if nation.alliance_seniority > 0:
+            pos_line += f" • {nation.alliance_seniority}d"
+        alliance_val += f"\n{pos_line}"
+
     embed.add_field(name="Alliance", value=alliance_val, inline=True)
 
     embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
     embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
 
-    if nation.last_active:
+    # Use a live Discord relative timestamp when available (GraphQL path);
+    # fall back to the plain string for REST-sourced nations.
+    if nation.last_active_unix:
+        embed.add_field(name="Last Active", value=f"<t:{nation.last_active_unix}:R>", inline=True)
+    elif nation.last_active:
         embed.add_field(name="Last Active", value=nation.last_active, inline=True)
 
     # Military capacity percentages
@@ -121,7 +158,7 @@ def _nation_embed(
 
         military_text = (
             f"🪖 Soldiers: {pct(nation.soldiers, max_sol)}\n"
-            f"🛡️ Tanks:    {pct(nation.tanks, max_tan)}\n"
+            f"⚙️ Tanks:    {pct(nation.tanks, max_tan)}\n"
             f"✈️ Aircraft: {pct(nation.aircraft, max_air)}\n"
             f"🚢 Ships:    {pct(nation.ships, max_shi)}"
         )
@@ -131,6 +168,32 @@ def _nation_embed(
         embed.add_field(name="Discord", value=registered_discord, inline=True)
     elif nation.discord_tag:
         embed.add_field(name="PnW Discord", value=f"`{nation.discord_tag}`", inline=True)
+
+    return embed
+
+
+def _alliance_embed(info: AllianceInfo) -> discord.Embed:
+    """Build a rich Discord embed for a PnW alliance."""
+    title = f"{info.name} ({info.acronym})" if info.acronym else info.name
+    embed = discord.Embed(
+        title=title,
+        url=_alliance_url(info.alliance_id),
+        color=discord.Color.gold(),
+    )
+
+    if info.flag:
+        embed.set_thumbnail(url=info.flag)
+
+    embed.add_field(name="Score", value=f"{info.score:,.2f}", inline=True)
+    embed.add_field(name="Avg Score", value=f"{info.average_score:,.2f}", inline=True)
+    embed.add_field(name="Color", value=info.color.title() if info.color else "—", inline=True)
+    embed.add_field(name="Members", value=str(info.num_members), inline=True)
+    embed.add_field(name="Applicants", value=str(info.num_applicants), inline=True)
+    embed.add_field(name="Total Cities", value=str(info.total_cities), inline=True)
+    embed.add_field(name="Avg Cities", value=f"{info.avg_cities:.1f}", inline=True)
+
+    if info.discord_link:
+        embed.add_field(name="Discord", value=f"[Join Server]({info.discord_link})", inline=True)
 
     return embed
 
@@ -178,6 +241,7 @@ class FlameBot(discord.Client):
         log.info("bar3 API listening on port %d.", config.API_PORT)
 
     async def close(self) -> None:
+        await self.pnw.close()
         if self._api_runner is not None:
             await self._api_runner.cleanup()
         await super().close()
@@ -413,6 +477,63 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /unregister
+# ---------------------------------------------------------------------------
+
+
+@bot.tree.command(
+    name="unregister",
+    description="Remove your Politics and War nation registration from this bot.",
+)
+async def unregister(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    deleted = bot.db.delete(interaction.user.id)
+    if deleted:
+        await interaction.followup.send(
+            "✅ Your registration has been removed.", ephemeral=True
+        )
+    else:
+        await interaction.followup.send(
+            "ℹ️ You are not currently registered.", ephemeral=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# /alliance
+# ---------------------------------------------------------------------------
+
+
+@bot.tree.command(
+    name="alliance",
+    description="Look up a Politics and War alliance by ID or name.",
+)
+@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+async def alliance_find(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+
+    query = query.strip()
+    try:
+        if query.isdigit():
+            info = await bot.pnw.get_alliance_by_id(int(query))
+        else:
+            info = await bot.pnw.get_alliance_by_name(query)
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance '%s'", query)
+        await interaction.followup.send(
+            f"❌ Could not reach the Politics and War API: {exc}"
+        )
+        return
+
+    if info is None:
+        await interaction.followup.send(
+            f"ℹ️ No alliance found for `{query}`."
+        )
+        return
+
+    await interaction.followup.send(embed=_alliance_embed(info))
+
+
+# ---------------------------------------------------------------------------
 # /config  (command group)
 # ---------------------------------------------------------------------------
 
@@ -422,52 +543,55 @@ config_group = app_commands.Group(
 )
 bot.tree.add_command(config_group)
 
-
-@config_group.command(
+# /config slots  — nested subgroup
+config_slots_group = app_commands.Group(
     name="slots",
+    description="Configure the alliances monitored by /slots.",
+)
+config_group.add_command(config_slots_group)
+
+
+def _parse_alliance_ids(raw: str) -> list[int] | None:
+    """Parse a comma-separated string of positive integers. Returns None on error."""
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    result: list[int] = []
+    for part in parts:
+        if not part.isdigit() or int(part) <= 0:
+            return None
+        result.append(int(part))
+    return result or None
+
+
+@config_slots_group.command(
+    name="set",
     description="Set the alliance IDs monitored by /slots (admin only).",
 )
 @app_commands.describe(
     alliance_ids="Comma-separated Politics and War alliance IDs to monitor."
 )
 @app_commands.checks.has_permissions(administrator=True)
-async def config_slots(interaction: discord.Interaction, alliance_ids: str) -> None:
+async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) -> None:
     await interaction.response.defer(ephemeral=True)
 
-    raw_ids = [part.strip() for part in alliance_ids.split(",") if part.strip()]
-    parsed: list[int] = []
-    for part in raw_ids:
-        if not part.isdigit() or int(part) <= 0:
-            await interaction.followup.send(
-                f"❌ `{part}` is not a valid alliance ID. "
-                "Please provide positive integers separated by commas.",
-                ephemeral=True,
-            )
-            return
-        parsed.append(int(part))
-
-    if not parsed:
+    parsed = _parse_alliance_ids(alliance_ids)
+    if parsed is None:
         await interaction.followup.send(
-            "❌ No valid alliance IDs provided.", ephemeral=True
+            "❌ Invalid input. Please provide positive integers separated by commas.",
+            ephemeral=True,
         )
         return
 
     guild_id = interaction.guild_id or 0
     bot.db.set_slots_alliances(guild_id, parsed)
-    log.info(
-        "Guild %d: /slots alliances updated to %s by %s",
-        guild_id,
-        parsed,
-        interaction.user,
-    )
+    log.info("Guild %d: /slots alliances set to %s by %s", guild_id, parsed, interaction.user)
     await interaction.followup.send(
         f"✅ /slots will now monitor alliance(s): `{', '.join(str(a) for a in parsed)}`",
         ephemeral=True,
     )
 
 
-@config_slots.error
-async def config_slots_error(
+@config_slots_set.error
+async def config_slots_set_error(
     interaction: discord.Interaction, error: app_commands.AppCommandError
 ) -> None:
     if isinstance(error, app_commands.MissingPermissions):
@@ -477,6 +601,170 @@ async def config_slots_error(
         )
     else:
         raise error
+
+
+@config_slots_group.command(
+    name="show",
+    description="Show the currently configured /slots alliance IDs.",
+)
+async def config_slots_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    ids = bot.db.get_slots_alliances(guild_id)
+    if not ids:
+        await interaction.followup.send(
+            "ℹ️ No alliances configured yet. Use `/config slots set` to configure.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"ℹ️ Currently monitoring: `{', '.join(str(a) for a in ids)}`",
+            ephemeral=True,
+        )
+
+
+@config_slots_group.command(
+    name="clear",
+    description="Clear the /slots alliance configuration (admin only).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def config_slots_clear(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    bot.db.set_slots_alliances(guild_id, [])
+    log.info("Guild %d: /slots alliances cleared by %s", guild_id, interaction.user)
+    await interaction.followup.send(
+        "✅ /slots alliance configuration cleared.", ephemeral=True
+    )
+
+
+@config_slots_clear.error
+async def config_slots_clear_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
+# /slots  — helpers + View
+# ---------------------------------------------------------------------------
+
+_EMBED_DESC_SOFT_LIMIT = 4000
+
+
+def _build_slots_embeds(
+    members: list[Nation],
+    war_counts: dict[int, int],
+    sort_key: str = "slots",
+) -> list[discord.Embed]:
+    """Return a list of Discord embeds for the /slots display.
+
+    *sort_key* is either ``"slots"`` (most open slots first, then by score) or
+    ``"score"`` (highest score first).
+    """
+    if sort_key == "slots":
+        sorted_members = sorted(
+            members,
+            key=lambda n: (
+                MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0),
+                n.score,
+            ),
+            reverse=True,
+        )
+    else:
+        sorted_members = sorted(members, key=lambda n: n.score, reverse=True)
+
+    alliances_map: dict[int, list[Nation]] = {}
+    for nation in sorted_members:
+        alliances_map.setdefault(nation.alliance_id, []).append(nation)
+
+    embeds: list[discord.Embed] = []
+
+    for alliance_id, nations in alliances_map.items():
+        alliance_name = nations[0].alliance_name or f"Alliance {alliance_id}"
+        total_open = sum(
+            MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0) for n in nations
+        )
+        section_lines: list[str] = []
+        for nation in nations:
+            active_def = war_counts.get(nation.nation_id, 0)
+            open_slots = MAX_DEFENSIVE_SLOTS - active_def
+            section_lines.append(
+                f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) "
+                f"— 🏙️ {nation.num_cities} "
+                f"| ⭐ {nation.score:,.0f} "
+                f"| 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS} slots"
+            )
+
+        chunk: list[str] = []
+        chunk_len = 0
+        part = 1
+        footer = f"{len(nations)} members · {total_open} open slots"
+
+        for line in section_lines:
+            needed = len(line) + (1 if chunk else 0)
+            if chunk_len + needed > _EMBED_DESC_SOFT_LIMIT and chunk:
+                title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
+                e = discord.Embed(
+                    title=title,
+                    description="\n".join(chunk),
+                    color=discord.Color.green(),
+                )
+                e.set_footer(text=footer)
+                embeds.append(e)
+                chunk = [line]
+                chunk_len = len(line)
+                part += 1
+            else:
+                chunk.append(line)
+                chunk_len += needed
+
+        if chunk:
+            title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
+            e = discord.Embed(
+                title=title,
+                description="\n".join(chunk),
+                color=discord.Color.green(),
+            )
+            e.set_footer(text=footer)
+            embeds.append(e)
+
+    return embeds
+
+
+class SlotsView(discord.ui.View):
+    """Sort-toggle buttons attached to the /slots response."""
+
+    def __init__(self, members: list[Nation], war_counts: dict[int, int]) -> None:
+        super().__init__(timeout=600)
+        self.members = members
+        self.war_counts = war_counts
+
+    async def _send_sorted(
+        self, interaction: discord.Interaction, sort_key: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        embeds = _build_slots_embeds(self.members, self.war_counts, sort_key)
+        for i in range(0, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[i : i + 10], ephemeral=True)
+
+    @discord.ui.button(label="Sort: Open Slots", style=discord.ButtonStyle.primary, emoji="🛡️")
+    async def sort_slots(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._send_sorted(interaction, "slots")
+
+    @discord.ui.button(label="Sort: Score", style=discord.ButtonStyle.secondary, emoji="⭐")
+    async def sort_score(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._send_sorted(interaction, "score")
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +784,7 @@ async def slots(interaction: discord.Interaction) -> None:
 
     if not alliance_ids:
         await interaction.followup.send(
-            "ℹ️ No alliances configured. An admin can use `/config slots` to set them up."
+            "ℹ️ No alliances configured. An admin can use `/config slots set` to set them up."
         )
         return
 
@@ -524,67 +812,17 @@ async def slots(interaction: discord.Interaction) -> None:
         log.exception("PnW API error while fetching war counts")
         war_counts = {}
 
-    # Sort by score descending
-    members.sort(key=lambda n: n.score, reverse=True)
+    # Default: sorted by open slots descending (most vulnerable first)
+    embeds = _build_slots_embeds(members, war_counts, sort_key="slots")
 
-    # Build embed(s) – Discord description cap is 4096 chars
-    # Group by alliance for readability
-    alliances_map: dict[int, list[Nation]] = {}
-    for nation in members:
-        alliances_map.setdefault(nation.alliance_id, []).append(nation)
-
-    embeds: list[discord.Embed] = []
-    # Stay comfortably below Discord's 4096-char description hard limit
-    EMBED_DESC_SOFT_LIMIT = 4000
-
-    def _flush_embed(title: str, lines: list[str]) -> None:
-        if not lines:
-            return
-        embeds.append(
-            discord.Embed(
-                title=title,
-                description="\n".join(lines),
-                color=discord.Color.green(),
-            )
-        )
-
-    for alliance_id, nations in alliances_map.items():
-        alliance_name = nations[0].alliance_name or f"Alliance {alliance_id}"
-        section_lines: list[str] = []
-        for nation in nations:
-            active_def = war_counts.get(nation.nation_id, 0)
-            open_slots = MAX_DEFENSIVE_SLOTS - active_def
-            line = (
-                f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) "
-                f"— 🏙️ {nation.num_cities} "
-                f"| ⭐ {nation.score:,.0f} "
-                f"| 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS} slots"
-            )
-            section_lines.append(line)
-
-        # Chunk into embeds that fit within the description limit
-        chunk: list[str] = []
-        chunk_len = 0
-        part = 1
-        for line in section_lines:
-            # +1 accounts for the newline separator between lines
-            needed = len(line) + (1 if chunk else 0)
-            if chunk_len + needed > EMBED_DESC_SOFT_LIMIT and chunk:
-                title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
-                _flush_embed(title, chunk)
-                chunk = [line]
-                chunk_len = len(line)
-                part += 1
-            else:
-                chunk.append(line)
-                chunk_len += needed
-        title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
-        _flush_embed(title, chunk)
-
-    # Discord allows up to 10 embeds per message; send additional messages if needed
+    # Send data embeds (up to 10 per message)
     BATCH = 10
     for i in range(0, len(embeds), BATCH):
         await interaction.followup.send(embeds=embeds[i : i + BATCH])
+
+    # Send sort-toggle control panel
+    view = SlotsView(members, war_counts)
+    await interaction.followup.send("**Sort:**", view=view)
 
 
 # ---------------------------------------------------------------------------
