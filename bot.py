@@ -57,7 +57,7 @@ Commands
     Compose a Locutus /transfer resources command for a resource transfer.
     receiver is a Discord ping or nation ID; bank_note defaults to #grant.
     Posts an embed with all details and the pre-formatted command:
-    /transfer resources receiver:<id> transfer:{"money":1000,...} bank_note:#grant
+    /transfer resources receiver:<id> transfer:{ money:1000,...} bank_note:#grant
 
 """
 from __future__ import annotations
