@@ -39,6 +39,8 @@ class Nation:
     tanks: int = 0
     aircraft: int = 0
     ships: int = 0
+    # National projects
+    num_projects: int = 0
     # Alliance info
     alliance_id: int = 0
     alliance_name: str = ""
@@ -77,6 +79,7 @@ _NATION_FIELDS = """
     tanks
     aircraft
     ships
+    num_projects
     alliance_id
     alliance_position
     alliance_seniority
@@ -168,6 +171,7 @@ class PnWClient:
             tanks=int(n.get("tanks") or 0),
             aircraft=int(n.get("aircraft") or 0),
             ships=int(n.get("ships") or 0),
+            num_projects=int(n.get("num_projects") or 0),
             alliance_id=int(n.get("alliance_id") or 0),
             alliance_name=alliance.get("name", "") or "",
             alliance_position=n.get("alliance_position", "") or "",

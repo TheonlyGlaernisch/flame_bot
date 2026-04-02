@@ -158,6 +158,14 @@ def _nation_embed(
 
     embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
     embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
+    embed.add_field(name="Projects", value=str(nation.num_projects), inline=True)
+
+    # Average infrastructure estimate
+    # Formula: (score - (cities-1)*100 - 10 - projects*20) * 400 / cities
+    if nation.num_cities > 0:
+        infra_score = nation.score - (nation.num_cities - 1) * 100 - 10 - nation.num_projects * 20
+        avg_infra = infra_score * 400 / nation.num_cities
+        embed.add_field(name="Avg Infra", value=f"{avg_infra:,.2f}", inline=True)
 
     # Use a live Discord relative timestamp when available (GraphQL path);
     # fall back to the plain string for REST-sourced nations.
