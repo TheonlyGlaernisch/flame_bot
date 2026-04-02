@@ -122,6 +122,14 @@ def create_app(
             )
 
         member = guild.get_member(discord_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(discord_id)
+            except discord.NotFound:
+                member = None
+            except discord.HTTPException as exc:
+                log.warning("fetch_member(%s) failed: %s", discord_id, exc)
+                member = None
         if member is not None:
             member_role_ids = {r.id for r in member.roles}
             if role_config.verified_role_id and role_config.verified_role_id in member_role_ids:
