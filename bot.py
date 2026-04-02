@@ -1238,7 +1238,7 @@ async def send_resources(
     # Build the JSON transfer payload: {"money":1000,"food":500,...}
     # Use integer values where possible to keep the string clean.
     transfer_json = "{" + ",".join(
-        f'"{k}":{_fmt_amount(v)}' for k, v in resources.items()
+        f'{k}:{_fmt_amount(v)}' for k, v in resources.items()
     ) + "}"
 
     locutus_cmd = (
