@@ -797,3 +797,228 @@ class TestParseLastActiveUnix:
     def test_invalid_string_returns_zero(self):
         from pnw_api import _parse_last_active_unix
         assert _parse_last_active_unix("not a date") == 0
+
+
+# ---------------------------------------------------------------------------
+# Shared mock alliance data (for get_alliance_by_id / get_alliance_by_name tests)
+# ---------------------------------------------------------------------------
+
+_ALLIANCE_API_DATA = {
+    "id": "100",
+    "name": "Test Alliance",
+    "acronym": "TA",
+    "score": 50000.0,
+    "average_score": 1000.0,
+    "color": "green",
+    "flag": "https://example.com/flag.png",
+    "discord_link": "https://discord.gg/test",
+    "nations": [
+        # active member
+        {"id": "1", "num_cities": 10, "alliance_position": "MEMBER", "vacation_mode_turns": 0},
+        # active officer
+        {"id": "2", "num_cities": 15, "alliance_position": "OFFICER", "vacation_mode_turns": 0},
+        # applicant — excluded from active count
+        {"id": "3", "num_cities": 5, "alliance_position": "APPLICANT", "vacation_mode_turns": 0},
+        # vacation mode — excluded from active count
+        {"id": "4", "num_cities": 8, "alliance_position": "MEMBER", "vacation_mode_turns": 12},
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# PnWClient.get_alliance_by_id tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllianceById:
+    @pytest.mark.asyncio
+    async def test_returns_alliance_on_success(self):
+        mock_response = {"data": {"alliances": {"data": [_ALLIANCE_API_DATA]}}}
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_id(100)
+
+        assert info is not None
+        assert info.alliance_id == 100
+        assert info.name == "Test Alliance"
+        assert info.acronym == "TA"
+        assert info.score == 50000.0
+        assert info.average_score == 1000.0
+        assert info.color == "green"
+        assert info.flag == "https://example.com/flag.png"
+        assert info.discord_link == "https://discord.gg/test"
+        # only the 2 non-vmode, non-applicant members count as active
+        assert info.num_members == 2
+        assert info.num_applicants == 1
+        assert info.total_cities == 25   # 10 + 15
+        assert info.avg_cities == 12.5
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self):
+        mock_response = {"data": {"alliances": {"data": []}}}
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_id(9999)
+
+        assert info is None
+
+    @pytest.mark.asyncio
+    async def test_raises_on_api_error(self):
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(side_effect=RuntimeError("PnW API returned errors: Unauthorized")),
+        ):
+            with pytest.raises(RuntimeError, match="Unauthorized"):
+                await client.get_alliance_by_id(1)
+
+
+# ---------------------------------------------------------------------------
+# PnWClient.get_alliance_by_name tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllianceByName:
+    @pytest.mark.asyncio
+    async def test_returns_alliance_on_match(self):
+        mock_response = {"data": {"alliances": {"data": [_ALLIANCE_API_DATA]}}}
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_name("Test Alliance")
+
+        assert info is not None
+        assert info.name == "Test Alliance"
+        assert info.num_members == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_match(self):
+        mock_response = {"data": {"alliances": {"data": []}}}
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            info = await client.get_alliance_by_name("Nobody")
+
+        assert info is None
+
+    @pytest.mark.asyncio
+    async def test_passes_name_as_list_variable(self):
+        """The query must send name as a list so the [String] variable type is satisfied."""
+        mock_response = {"data": {"alliances": {"data": []}}}
+        captured: list = []
+
+        async def capturing_query(query_str, variables):
+            captured.append(variables)
+            return mock_response
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=capturing_query):
+            await client.get_alliance_by_name("Some Alliance")
+
+        assert captured, "expected _query to be called"
+        assert captured[0]["name"] == ["Some Alliance"]
+
+
+# ---------------------------------------------------------------------------
+# PnWClient.get_nation_by_discord_tag tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetNationByDiscordTag:
+    @pytest.mark.asyncio
+    async def test_returns_nation_on_match(self):
+        mock_response = {"data": {"nations": {"data": [_NATION_DATA]}}}
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            nation = await client.get_nation_by_discord_tag("testuser")
+
+        assert nation is not None
+        assert nation.discord_tag == "testuser"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_match(self):
+        mock_response = {"data": {"nations": {"data": []}}}
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=AsyncMock(return_value=mock_response)):
+            nation = await client.get_nation_by_discord_tag("ghost")
+
+        assert nation is None
+
+    @pytest.mark.asyncio
+    async def test_passes_discord_tag_as_list_variable(self):
+        """The query must send discord as a list so the [String] variable type is satisfied."""
+        mock_response = {"data": {"nations": {"data": []}}}
+        captured: list = []
+
+        async def capturing_query(query_str, variables):
+            captured.append(variables)
+            return mock_response
+
+        client = PnWClient(api_key="dummy")
+
+        with patch.object(client, "_query", new=capturing_query):
+            await client.get_nation_by_discord_tag("someuser")
+
+        assert captured, "expected _query to be called"
+        assert captured[0]["discord"] == ["someuser"]
+
+
+# ---------------------------------------------------------------------------
+# Database gov-role config tests
+# ---------------------------------------------------------------------------
+
+
+class TestGovRoles:
+    def test_returns_all_none_by_default(self):
+        db = _make_db()
+        roles = db.get_gov_roles(1)
+        assert roles == {"econ": None, "milcom": None, "ia": None, "gov": None}
+
+    def test_set_and_get_all_roles(self):
+        db = _make_db()
+        db.set_gov_roles(1, {"econ": 111, "milcom": 222, "ia": 333, "gov": 444})
+        roles = db.get_gov_roles(1)
+        assert roles["econ"] == 111
+        assert roles["milcom"] == 222
+        assert roles["ia"] == 333
+        assert roles["gov"] == 444
+
+    def test_partial_roles_preserved(self):
+        db = _make_db()
+        db.set_gov_roles(1, {"econ": 111, "milcom": None, "ia": None, "gov": None})
+        roles = db.get_gov_roles(1)
+        assert roles["econ"] == 111
+        assert roles["milcom"] is None
+
+    def test_set_gov_roles_overwrites(self):
+        db = _make_db()
+        db.set_gov_roles(1, {"econ": 111, "milcom": None, "ia": None, "gov": None})
+        db.set_gov_roles(1, {"econ": 222, "milcom": None, "ia": None, "gov": None})
+        assert db.get_gov_roles(1)["econ"] == 222
+
+    def test_gov_roles_isolated_per_guild(self):
+        db = _make_db()
+        db.set_gov_roles(1, {"econ": 111, "milcom": None, "ia": None, "gov": None})
+        db.set_gov_roles(2, {"econ": 999, "milcom": None, "ia": None, "gov": None})
+        assert db.get_gov_roles(1)["econ"] == 111
+        assert db.get_gov_roles(2)["econ"] == 999
+
+    def test_role_ids_returned_as_int(self):
+        db = _make_db()
+        db.set_gov_roles(1, {"econ": 123456789012345678, "milcom": None, "ia": None, "gov": None})
+        roles = db.get_gov_roles(1)
+        assert isinstance(roles["econ"], int)
+        assert roles["econ"] == 123456789012345678

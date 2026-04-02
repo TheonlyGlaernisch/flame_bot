@@ -129,6 +129,7 @@ def _alliance_url(alliance_id: int) -> str:
 def _nation_embed(
     nation: Nation,
     registered_discord: str | None = None,
+    note: str | None = None,
 ) -> discord.Embed:
     """Build a rich Discord embed for a PnW nation."""
     embed = discord.Embed(
@@ -189,6 +190,9 @@ def _nation_embed(
         embed.add_field(name="Discord", value=registered_discord, inline=True)
     elif nation.discord_tag:
         embed.add_field(name="PnW Discord", value=f"`{nation.discord_tag}`", inline=True)
+
+    if note:
+        embed.set_footer(text=note)
 
     return embed
 
@@ -401,9 +405,36 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
         target_id = int(mention_match.group(1))
         row = bot.db.get_by_discord_id(target_id)
         if row is None:
-            await interaction.followup.send(
-                f"ℹ️ <@{target_id}> has not registered yet."
-            )
+            # Not registered locally — try to find them on PnW by Discord username.
+            member = interaction.guild and interaction.guild.get_member(target_id)
+            if member is None and interaction.guild is not None:
+                try:
+                    member = await interaction.guild.fetch_member(target_id)
+                except discord.NotFound:
+                    member = None
+            nation: Optional[Nation] = None
+            if member is not None:
+                try:
+                    nation = await bot.pnw.get_nation_by_discord_tag(member.name)
+                    # Verify the returned nation's tag actually matches this user
+                    # (the API filter may return partial matches).
+                    if nation is not None and not bot.pnw.discord_matches(
+                        nation.discord_tag, member.name
+                    ):
+                        nation = None
+                except Exception:
+                    nation = None
+            if nation is not None:
+                embed = _nation_embed(
+                    nation,
+                    registered_discord=f"<@{target_id}>",
+                    note="ℹ️ Found via PnW discord field (not locally registered).",
+                )
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send(
+                    f"ℹ️ <@{target_id}> has not registered yet and no matching PnW nation was found."
+                )
             return
 
         nation_id = row["nation_id"]
@@ -1001,12 +1032,16 @@ async def gov(interaction: discord.Interaction) -> None:
         color=discord.Color.blurple(),
     )
 
+    # Fetch roles directly from the API so we're not relying on the guild cache,
+    # which may not be fully populated when the bot first starts up.
+    guild_roles = {r.id: r for r in await guild.fetch_roles()}
+
     total = 0
     for key, label in _GOV_DEPT_LABELS.items():
         role_id = config_roles[key]
         if not role_id:
             continue
-        role = guild.get_role(role_id)
+        role = guild_roles.get(role_id)
         if role is None:
             embed.add_field(
                 name=f"{_GOV_DEPT_EMOJI[key]} {label}",
@@ -1145,6 +1180,38 @@ async def send_resources(
     embed.add_field(name="Locutus Command", value=f"```{locutus_cmd}```", inline=False)
 
     await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /help
+# ---------------------------------------------------------------------------
+
+_HELP_COMMANDS = [
+    ("/register <nation_id>", "Link your Discord account to a PnW nation."),
+    ("/unregister", "Remove your PnW nation registration."),
+    ("/whois <query>", "Look up a nation by ID, name, or @mention."),
+    ("/alliance <query>", "Look up an alliance by ID or name."),
+    ("/gov", "Show members who hold a configured government role."),
+    ("/slots", "Show open defensive war slots for monitored alliances."),
+    ("/roles setup", "Map server roles to government departments. *(admin)*"),
+    ("/roles show", "Show the currently configured government roles."),
+    ("/config slots set <ids>", "Set alliance IDs monitored by /slots. *(admin)*"),
+    ("/config slots show", "Show configured /slots alliance IDs."),
+    ("/config slots clear", "Clear the /slots alliance configuration. *(admin)*"),
+    ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
+    ("/help", "Show this help message."),
+]
+
+
+@bot.tree.command(name="help", description="List all available bot commands.")
+async def help_command(interaction: discord.Interaction) -> None:
+    embed = discord.Embed(
+        title="Available Commands",
+        color=discord.Color.blurple(),
+    )
+    for name, description in _HELP_COMMANDS:
+        embed.add_field(name=name, value=description, inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
