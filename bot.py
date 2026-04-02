@@ -52,11 +52,12 @@ Commands
     role, organised by department (Economics, Military Command, Internal
     Affairs, Basic Gov).
 
-/send <receiver> [sender] [money] [food] [coal] [oil] [uranium] [iron]
+/send <receiver> [sender] [bank_note] [money] [food] [coal] [oil] [uranium] [iron]
       [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
-    Compose a Locutus /withdraw command for a resource transfer.
-    Posts an embed with the sender, receiver, resource amounts, and the
-    pre-formatted Locutus command string ready to copy and execute.
+    Compose a Locutus /transfer resources command for a resource transfer.
+    receiver is a Discord ping or nation ID; bank_note defaults to #grant.
+    Posts an embed with all details and the pre-formatted command:
+    /transfer resources receiver:<id> transfer:{"money":1000,...} bank_note:#grant
 
 """
 from __future__ import annotations
@@ -1035,31 +1036,21 @@ async def gov(interaction: discord.Interaction) -> None:
 # /send
 # ---------------------------------------------------------------------------
 
-# Mapping from resource name to the abbreviation Locutus uses in its
-# /withdraw resource string (e.g. "1000m,500f,100c").
-_LOCUTUS_RES_CODES: dict[str, str] = {
-    "money": "m",
-    "food": "f",
-    "coal": "c",
-    "oil": "o",
-    "uranium": "u",
-    "iron": "i",
-    "bauxite": "b",
-    "lead": "l",
-    "gasoline": "g",
-    "munitions": "mu",
-    "steel": "s",
-    "aluminum": "al",
-}
+# Resource keys accepted by Locutus /transfer resources (JSON field names).
+_LOCUTUS_RES_KEYS = (
+    "money", "food", "coal", "oil", "uranium", "iron",
+    "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum",
+)
 
 
 @bot.tree.command(
     name="send",
-    description="Compose a Locutus /withdraw request to transfer resources to a nation.",
+    description="Compose a Locutus /transfer resources command to send resources to a nation.",
 )
 @app_commands.describe(
-    receiver="Receiving nation name or ID.",
+    receiver="Receiving nation – Discord ping or nation ID.",
     sender="Sender nation name or ID (optional, for record-keeping).",
+    bank_note="Bank note attached to the transfer (defaults to #grant).",
     money="Amount of money.",
     food="Amount of food.",
     coal="Amount of coal.",
@@ -1077,6 +1068,7 @@ async def send_resources(
     interaction: discord.Interaction,
     receiver: str,
     sender: str | None = None,
+    bank_note: str = "#grant",
     money: float | None = None,
     food: float | None = None,
     coal: float | None = None,
@@ -1109,14 +1101,19 @@ async def send_resources(
         )
         return
 
-    # Build Locutus resource string: e.g. "1000m,500f,100c"
     def _fmt_amount(v: float) -> str:
         return str(int(v)) if v == int(v) else str(v)
 
-    resource_string = ",".join(
-        f"{_fmt_amount(v)}{_LOCUTUS_RES_CODES[k]}" for k, v in resources.items()
+    # Build the JSON transfer payload: {"money":1000,"food":500,...}
+    # Use integer values where possible to keep the string clean.
+    transfer_json = "{" + ",".join(
+        f'"{k}":{_fmt_amount(v)}' for k, v in resources.items()
+    ) + "}"
+
+    locutus_cmd = (
+        f"/transfer resources receiver:{receiver} "
+        f"transfer:{transfer_json} bank_note:{bank_note}"
     )
-    locutus_cmd = f"/withdraw receiver:{receiver} resources:{resource_string}"
 
     embed = discord.Embed(
         title="💸 Resource Transfer Request",
@@ -1126,6 +1123,7 @@ async def send_resources(
         embed.add_field(name="From", value=sender, inline=True)
     embed.add_field(name="To", value=receiver, inline=True)
     embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Bank note", value=bank_note, inline=True)
 
     res_lines = [
         f"**{name.title()}:** {_fmt_amount(val)}" for name, val in resources.items()
