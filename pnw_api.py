@@ -39,6 +39,8 @@ class Nation:
     tanks: int = 0
     aircraft: int = 0
     ships: int = 0
+    missiles: int = 0
+    nukes: int = 0
     # National projects — list of short abbreviations for built projects
     projects_built: list[str] = field(default_factory=list)
 
@@ -84,6 +86,8 @@ _NATION_FIELDS = """
     tanks
     aircraft
     ships
+    missiles
+    nukes
     iron_works
     bauxite_works
     arms_stockpile
@@ -238,6 +242,8 @@ class PnWClient:
             tanks=int(n.get("tanks") or 0),
             aircraft=int(n.get("aircraft") or 0),
             ships=int(n.get("ships") or 0),
+            missiles=int(n.get("missiles") or 0),
+            nukes=int(n.get("nukes") or 0),
             projects_built=projects_built,
             alliance_id=int(n.get("alliance_id") or 0),
             alliance_name=alliance.get("name", "") or "",
