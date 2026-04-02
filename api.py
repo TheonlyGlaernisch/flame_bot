@@ -14,6 +14,9 @@ GET /health
     Returns ``{"status": "ok"}`` (200 OK).  Intended as a lightweight
     liveness probe for uptime monitors and deployment platforms.
 
+GET /ping
+    Returns ``{"ping": "pong"}`` (200 OK).  Simple round-trip check.
+
 GET /api/roles/{discord_id}
     Returns the bar3 role status for the given Discord user ID.
 
@@ -92,6 +95,9 @@ def create_app(
     async def health(request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
 
+    async def ping(request: web.Request) -> web.Response:
+        return web.json_response({"ping": "pong"})
+
     async def get_roles(request: web.Request) -> web.Response:
         if not _check_api_key(request, api_key):
             return web.json_response({"error": "Unauthorized"}, status=401)
@@ -135,5 +141,6 @@ def create_app(
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
+    app.router.add_get("/ping", ping)
     app.router.add_get("/api/roles/{discord_id}", get_roles)
     return app
