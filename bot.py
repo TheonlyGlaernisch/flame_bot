@@ -917,6 +917,7 @@ async def slots(interaction: discord.Interaction) -> None:
 # ---------------------------------------------------------------------------
 
 _GOV_DEPT_LABELS: dict[str, str] = {
+    "leader": "Leader",
     "econ": "Economics",
     "milcom": "Military Command",
     "ia": "Internal Affairs",
@@ -935,6 +936,7 @@ bot.tree.add_command(roles_group)
     description="Map existing server roles to government departments (admin only).",
 )
 @app_commands.describe(
+    leader="Role that counts as Leader.",
     econ="Role that counts as Economics.",
     milcom="Role that counts as Military Command.",
     ia="Role that counts as Internal Affairs.",
@@ -943,6 +945,7 @@ bot.tree.add_command(roles_group)
 @app_commands.checks.has_permissions(administrator=True)
 async def roles_setup(
     interaction: discord.Interaction,
+    leader: discord.Role | None = None,
     econ: discord.Role | None = None,
     milcom: discord.Role | None = None,
     ia: discord.Role | None = None,
@@ -954,6 +957,7 @@ async def roles_setup(
     current = bot.db.get_gov_roles(guild_id)
 
     updates = {
+        "leader": leader.id if leader else current["leader"],
         "econ": econ.id if econ else current["econ"],
         "milcom": milcom.id if milcom else current["milcom"],
         "ia": ia.id if ia else current["ia"],
@@ -1022,11 +1026,15 @@ async def roles_show(interaction: discord.Interaction) -> None:
 
 # Emoji prefix for each department shown in the /gov embed.
 _GOV_DEPT_EMOJI: dict[str, str] = {
+    "leader": "👑",
     "econ": "💰",
     "milcom": "⚔️",
     "ia": "🤝",
     "gov": "🏛️",
 }
+
+# Departments hidden from the /gov embed (still configurable via /roles setup).
+_GOV_HIDDEN_FROM_EMBED: frozenset[str] = frozenset({"gov"})
 
 
 @bot.tree.command(
@@ -1059,6 +1067,8 @@ async def gov(interaction: discord.Interaction) -> None:
 
     total = 0
     for key, label in _GOV_DEPT_LABELS.items():
+        if key in _GOV_HIDDEN_FROM_EMBED:
+            continue
         role_id = config_roles[key]
         if not role_id:
             continue
