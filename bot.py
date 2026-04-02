@@ -223,6 +223,21 @@ def _alliance_embed(info: AllianceInfo) -> discord.Embed:
     return embed
 
 
+def _error_embed(description: str) -> discord.Embed:
+    """Return a red embed for error messages."""
+    return discord.Embed(description=description, color=discord.Color.red())
+
+
+def _info_embed(description: str) -> discord.Embed:
+    """Return a blurple embed for informational messages."""
+    return discord.Embed(description=description, color=discord.Color.blurple())
+
+
+def _success_embed(description: str) -> discord.Embed:
+    """Return a green embed for success messages."""
+    return discord.Embed(description=description, color=discord.Color.green())
+
+
 # ---------------------------------------------------------------------------
 # Bot class
 # ---------------------------------------------------------------------------
@@ -289,7 +304,7 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
 
     if nation_id <= 0:
         await interaction.followup.send(
-            "❌ Please provide a valid positive nation ID."
+            embed=_error_embed("❌ Please provide a valid positive nation ID.")
         )
         return
 
@@ -299,7 +314,7 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     existing_by_nation = bot.db.get_by_nation_id(nation_id)
     if existing_by_nation and int(existing_by_nation["discord_id"]) != interaction.user.id:
         await interaction.followup.send(
-            "❌ That nation is already registered to a different Discord account.",
+            embed=_error_embed("❌ That nation is already registered to a different Discord account."),
         )
         return
 
@@ -311,13 +326,13 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     except Exception as exc:
         log.exception("PnW API error while fetching nation %d", nation_id)
         await interaction.followup.send(
-            f"❌ Could not reach the Politics and War API: {exc}"
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
         )
         return
 
     if nation is None:
         await interaction.followup.send(
-            f"❌ Nation with ID **{nation_id}** was not found."
+            embed=_error_embed(f"❌ Nation with ID **{nation_id}** was not found.")
         )
         return
 
@@ -327,12 +342,14 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     username = interaction.user.name
     if not PnWClient.discord_matches(nation.discord_tag, username):
         await interaction.followup.send(
-            f"❌ Verification failed.\n\n"
-            f"Nation **{nation.nation_name}** (leader: {nation.leader_name}) "
-            f"has `{nation.discord_tag or '(empty)'}` as its Discord handle, "
-            f"but your Discord username is `{username}`.\n\n"
-            f"Please set your Discord handle on your nation's edit page to "
-            f"`{username}` and try again.",
+            embed=_error_embed(
+                f"❌ Verification failed.\n\n"
+                f"Nation **{nation.nation_name}** (leader: {nation.leader_name}) "
+                f"has `{nation.discord_tag or '(empty)'}` as its Discord handle, "
+                f"but your Discord username is `{username}`.\n\n"
+                f"Please set your Discord handle on your nation's edit page to "
+                f"`{username}` and try again."
+            ),
         )
         return
 
@@ -372,9 +389,11 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
     )
 
     await interaction.followup.send(
-        f"✅ Successfully registered!\n"
-        f"Nation: **{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name})"
-        f"{roles_text}",
+        embed=_success_embed(
+            f"✅ Successfully registered!\n"
+            f"Nation: **{nation.nation_name}** (ID: `{nation_id}`, leader: {nation.leader_name})"
+            f"{roles_text}"
+        ),
     )
 
 
@@ -433,7 +452,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
                 await interaction.followup.send(embed=embed)
             else:
                 await interaction.followup.send(
-                    f"ℹ️ <@{target_id}> has not registered yet and no matching PnW nation was found."
+                    embed=_info_embed(f"ℹ️ <@{target_id}> has not registered yet and no matching PnW nation was found.")
                 )
             return
 
@@ -448,8 +467,10 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send(
-                f"<@{target_id}> is registered with nation ID `{nation_id}` "
-                "(nation details unavailable)."
+                embed=_info_embed(
+                    f"<@{target_id}> is registered with nation ID `{nation_id}` "
+                    "(nation details unavailable)."
+                )
             )
         return
 
@@ -460,7 +481,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
         nation_id = int(query)
         if nation_id <= 0:
             await interaction.followup.send(
-                "❌ Please provide a valid positive nation ID."
+                embed=_error_embed("❌ Please provide a valid positive nation ID.")
             )
             return
 
@@ -469,13 +490,13 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
         except Exception as exc:
             log.exception("PnW API error while fetching nation %d", nation_id)
             await interaction.followup.send(
-                f"❌ Could not reach the Politics and War API: {exc}"
+                embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
             )
             return
 
         if nation is None:
             await interaction.followup.send(
-                f"ℹ️ No nation with ID `{nation_id}` was found."
+                embed=_info_embed(f"ℹ️ No nation with ID `{nation_id}` was found.")
             )
             return
 
@@ -507,7 +528,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
     row = bot.db.get_by_discord_username(query)
     if row is None:
         await interaction.followup.send(
-            f"ℹ️ No nation or Discord user found for `{query}`."
+            embed=_info_embed(f"ℹ️ No nation or Discord user found for `{query}`.")
         )
         return
 
@@ -523,8 +544,10 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
         await interaction.followup.send(embed=embed)
     else:
         await interaction.followup.send(
-            f"**{stored_name}** is registered with nation ID `{nation_id}` "
-            "(nation details unavailable)."
+            embed=_info_embed(
+                f"**{stored_name}** is registered with nation ID `{nation_id}` "
+                "(nation details unavailable)."
+            )
         )
 
 
@@ -542,11 +565,11 @@ async def unregister(interaction: discord.Interaction) -> None:
     deleted = bot.db.delete(interaction.user.id)
     if deleted:
         await interaction.followup.send(
-            "✅ Your registration has been removed.", ephemeral=True
+            embed=_success_embed("✅ Your registration has been removed."), ephemeral=True
         )
     else:
         await interaction.followup.send(
-            "ℹ️ You are not currently registered.", ephemeral=True
+            embed=_info_embed("ℹ️ You are not currently registered."), ephemeral=True
         )
 
 
@@ -572,13 +595,13 @@ async def alliance_find(interaction: discord.Interaction, query: str) -> None:
     except Exception as exc:
         log.exception("PnW API error while fetching alliance '%s'", query)
         await interaction.followup.send(
-            f"❌ Could not reach the Politics and War API: {exc}"
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
         )
         return
 
     if info is None:
         await interaction.followup.send(
-            f"ℹ️ No alliance found for `{query}`."
+            embed=_info_embed(f"ℹ️ No alliance found for `{query}`.")
         )
         return
 
@@ -845,7 +868,7 @@ async def slots(interaction: discord.Interaction) -> None:
 
     if not alliance_ids:
         await interaction.followup.send(
-            "ℹ️ No alliances configured. An admin can use `/config slots set` to set them up."
+            embed=_info_embed("ℹ️ No alliances configured. An admin can use `/config slots set` to set them up.")
         )
         return
 
@@ -855,13 +878,13 @@ async def slots(interaction: discord.Interaction) -> None:
     except Exception as exc:
         log.exception("PnW API error while fetching alliance members")
         await interaction.followup.send(
-            f"❌ Could not reach the Politics and War API: {exc}"
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
         )
         return
 
     if not members:
         await interaction.followup.send(
-            "ℹ️ No active members found for the configured alliance(s)."
+            embed=_info_embed("ℹ️ No active members found for the configured alliance(s).")
         )
         return
 
@@ -1015,7 +1038,7 @@ async def gov(interaction: discord.Interaction) -> None:
 
     guild = interaction.guild
     if guild is None:
-        await interaction.followup.send("❌ This command can only be used inside a server.")
+        await interaction.followup.send(embed=_error_embed("❌ This command can only be used inside a server."))
         return
 
     guild_id = interaction.guild_id or 0
@@ -1023,7 +1046,7 @@ async def gov(interaction: discord.Interaction) -> None:
 
     if not any(config_roles.values()):
         await interaction.followup.send(
-            "ℹ️ No government roles configured yet. An admin can use `/roles setup` to set them up."
+            embed=_info_embed("ℹ️ No government roles configured yet. An admin can use `/roles setup` to set them up.")
         )
         return
 
@@ -1032,9 +1055,7 @@ async def gov(interaction: discord.Interaction) -> None:
         color=discord.Color.blurple(),
     )
 
-    # Fetch roles directly from the API so we're not relying on the guild cache,
-    # which may not be fully populated when the bot first starts up.
-    guild_roles = {r.id: r for r in await guild.fetch_roles()}
+    guild_roles = {r.id: r for r in guild.roles}
 
     total = 0
     for key, label in _GOV_DEPT_LABELS.items():
@@ -1065,6 +1086,18 @@ async def gov(interaction: discord.Interaction) -> None:
 
     embed.set_footer(text=f"{total} government member(s) total")
     await interaction.followup.send(embed=embed)
+
+
+@gov.error
+async def gov_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    log.exception("Unhandled error in /gov", exc_info=error)
+    embed = _error_embed(f"❌ An unexpected error occurred: {error}")
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1127,7 +1160,7 @@ async def send_resources(
         econ_role_id = bot.db.get_gov_roles(guild_id).get("econ")
         if not econ_role_id or not member or not any(r.id == econ_role_id for r in member.roles):
             await interaction.followup.send(
-                "❌ You need the **Economics** role to use this command.",
+                embed=_error_embed("❌ You need the **Economics** role to use this command."),
                 ephemeral=True,
             )
             return
@@ -1144,7 +1177,7 @@ async def send_resources(
 
     if not resources:
         await interaction.followup.send(
-            "❌ Please provide at least one resource amount greater than zero.",
+            embed=_error_embed("❌ Please provide at least one resource amount greater than zero."),
             ephemeral=True,
         )
         return
