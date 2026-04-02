@@ -52,6 +52,12 @@ Commands
     role, organised by department (Economics, Military Command, Internal
     Affairs, Basic Gov).
 
+/send <receiver> [sender] [money] [food] [coal] [oil] [uranium] [iron]
+      [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
+    Compose a Locutus /withdraw command for a resource transfer.
+    Posts an embed with the sender, receiver, resource amounts, and the
+    pre-formatted Locutus command string ready to copy and execute.
+
 """
 from __future__ import annotations
 
@@ -1022,6 +1028,111 @@ async def gov(interaction: discord.Interaction) -> None:
         )
 
     embed.set_footer(text=f"{total} government member(s) total")
+    await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /send
+# ---------------------------------------------------------------------------
+
+# Mapping from resource name to the abbreviation Locutus uses in its
+# /withdraw resource string (e.g. "1000m,500f,100c").
+_LOCUTUS_RES_CODES: dict[str, str] = {
+    "money": "m",
+    "food": "f",
+    "coal": "c",
+    "oil": "o",
+    "uranium": "u",
+    "iron": "i",
+    "bauxite": "b",
+    "lead": "l",
+    "gasoline": "g",
+    "munitions": "mu",
+    "steel": "s",
+    "aluminum": "al",
+}
+
+
+@bot.tree.command(
+    name="send",
+    description="Compose a Locutus /withdraw request to transfer resources to a nation.",
+)
+@app_commands.describe(
+    receiver="Receiving nation name or ID.",
+    sender="Sender nation name or ID (optional, for record-keeping).",
+    money="Amount of money.",
+    food="Amount of food.",
+    coal="Amount of coal.",
+    oil="Amount of oil.",
+    uranium="Amount of uranium.",
+    iron="Amount of iron.",
+    bauxite="Amount of bauxite.",
+    lead="Amount of lead.",
+    gasoline="Amount of gasoline.",
+    munitions="Amount of munitions.",
+    steel="Amount of steel.",
+    aluminum="Amount of aluminum.",
+)
+async def send_resources(
+    interaction: discord.Interaction,
+    receiver: str,
+    sender: str | None = None,
+    money: float | None = None,
+    food: float | None = None,
+    coal: float | None = None,
+    oil: float | None = None,
+    uranium: float | None = None,
+    iron: float | None = None,
+    bauxite: float | None = None,
+    lead: float | None = None,
+    gasoline: float | None = None,
+    munitions: float | None = None,
+    steel: float | None = None,
+    aluminum: float | None = None,
+) -> None:
+    await interaction.response.defer()
+
+    raw: list[tuple[str, float | None]] = [
+        ("money", money), ("food", food), ("coal", coal), ("oil", oil),
+        ("uranium", uranium), ("iron", iron), ("bauxite", bauxite),
+        ("lead", lead), ("gasoline", gasoline), ("munitions", munitions),
+        ("steel", steel), ("aluminum", aluminum),
+    ]
+    resources: dict[str, float] = {
+        name: val for name, val in raw if val is not None and val > 0
+    }
+
+    if not resources:
+        await interaction.followup.send(
+            "❌ Please provide at least one resource amount greater than zero.",
+            ephemeral=True,
+        )
+        return
+
+    # Build Locutus resource string: e.g. "1000m,500f,100c"
+    def _fmt_amount(v: float) -> str:
+        return str(int(v)) if v == int(v) else str(v)
+
+    resource_string = ",".join(
+        f"{_fmt_amount(v)}{_LOCUTUS_RES_CODES[k]}" for k, v in resources.items()
+    )
+    locutus_cmd = f"/withdraw receiver:{receiver} resources:{resource_string}"
+
+    embed = discord.Embed(
+        title="💸 Resource Transfer Request",
+        color=discord.Color.green(),
+    )
+    if sender:
+        embed.add_field(name="From", value=sender, inline=True)
+    embed.add_field(name="To", value=receiver, inline=True)
+    embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+
+    res_lines = [
+        f"**{name.title()}:** {_fmt_amount(val)}" for name, val in resources.items()
+    ]
+    embed.add_field(name="Resources", value="\n".join(res_lines), inline=False)
+    embed.add_field(name="Locutus Command", value=f"```{locutus_cmd}```", inline=False)
+
     await interaction.followup.send(embed=embed)
 
 
