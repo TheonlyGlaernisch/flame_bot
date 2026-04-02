@@ -401,9 +401,36 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
         target_id = int(mention_match.group(1))
         row = bot.db.get_by_discord_id(target_id)
         if row is None:
-            await interaction.followup.send(
-                f"ℹ️ <@{target_id}> has not registered yet."
-            )
+            # Not registered locally — try to find them on PnW by Discord username.
+            member = interaction.guild and interaction.guild.get_member(target_id)
+            if member is None and interaction.guild is not None:
+                try:
+                    member = await interaction.guild.fetch_member(target_id)
+                except discord.NotFound:
+                    member = None
+            nation: Optional[Nation] = None
+            if member is not None:
+                try:
+                    nation = await bot.pnw.get_nation_by_discord_tag(member.name)
+                    # Verify the returned nation's tag actually matches this user
+                    # (the API filter may return partial matches).
+                    if nation is not None and not bot.pnw.discord_matches(
+                        nation.discord_tag, member.name
+                    ):
+                        nation = None
+                except Exception:
+                    nation = None
+            if nation is not None:
+                embed = _nation_embed(
+                    nation,
+                    registered_discord=f"<@{target_id}>",
+                    note="ℹ️ Found via PnW discord field (not locally registered).",
+                )
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send(
+                    f"ℹ️ <@{target_id}> has not registered yet and no matching PnW nation was found."
+                )
             return
 
         nation_id = row["nation_id"]

@@ -238,6 +238,28 @@ class PnWClient:
             return None
         return self._parse_nation(nations[0])
 
+    async def get_nation_by_discord_tag(self, discord_tag: str) -> Optional[Nation]:
+        """Search for a nation whose PnW discord field matches *discord_tag*.
+
+        Returns the first match or None.  The comparison is done server-side
+        by the PnW API; the caller should verify with :meth:`discord_matches`
+        when an exact match is required.
+        """
+        query = f"""
+        query GetNationByDiscord($discord: [String]) {{
+            nations(discord: $discord, first: 1) {{
+                data {{
+                    {_NATION_FIELDS}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"discord": [discord_tag]})
+        nations = data.get("data", {}).get("nations", {}).get("data", [])
+        if not nations:
+            return None
+        return self._parse_nation(nations[0])
+
     async def get_alliance_members(self, alliance_ids: list[int]) -> list[Nation]:
         """Fetch all non-vacation-mode members of the given alliances."""
         query = f"""
