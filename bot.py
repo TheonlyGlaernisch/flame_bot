@@ -8,20 +8,41 @@ Commands
     The bot verifies that your Discord username appears in the nation's
     in-game Discord field before accepting the registration.
 
-/who <query>
-    If <query> is numeric, fetch that nation from the PnW API.
-    If <query> is a Discord username, look it up in the local database.
+/unregister
+    Remove your own registration.
 
-/whois <member>
-    Show the registered nation for a Discord member.
+/whois <query>
+    Unified nation look-up command.
+    • Numeric query  → fetch that nation from the PnW API by ID.
+    • @mention       → look up the mentioned member's registered nation.
+    • Text           → search PnW by nation name, then fall back to
+                       looking up a Discord username in the local database.
+    Response is a rich embed including alliance position, seniority, and
+    military capacity percentages.
 
-/check_roles
-    Re-evaluate and sync bar3 roles for the calling user.
-    Used by bar3 to decide whether the logged-in Discord user has access.
+/alliance <query>
+    Look up a Politics and War alliance by ID or name.
+    Returns an embed with score, member count, avg cities, and more.
+
+/config slots set <alliance_ids>
+    (Admin only) Set the alliance IDs monitored by /slots.
+
+/config slots show
+    Show the currently configured /slots alliance IDs.
+
+/config slots clear
+    (Admin only) Clear the /slots alliance configuration.
+
+/slots
+    Show an embed listing all non-vacation-mode members of the configured
+    alliances with their score, city count, and open defensive slots.
+    Includes sort buttons to toggle between open-slots and score ordering.
+
 """
 from __future__ import annotations
 
 import logging
+import re
 
 import discord
 from aiohttp import web
@@ -30,7 +51,16 @@ from discord import app_commands
 import config
 from api import RoleConfig, create_app
 from database import Database
-from pnw_api import PnWClient
+from pnw_api import (
+    MAX_AIRCRAFT_PER_CITY,
+    MAX_DEFENSIVE_SLOTS,
+    MAX_SHIPS_PER_CITY,
+    MAX_SOLDIERS_PER_CITY,
+    MAX_TANKS_PER_CITY,
+    AllianceInfo,
+    Nation,
+    PnWClient,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -53,6 +83,8 @@ ROLE_IDS: dict[str, int | None] = {
     "bar3_server": config.BAR3_SERVER_ROLE_ID,
 }
 
+_MENTION_RE = re.compile(r"^<@!?(\d+)>$")
+
 
 def _get_role(guild: discord.Guild, role_id: int | None) -> discord.Role | None:
     if role_id is None:
@@ -63,6 +95,107 @@ def _get_role(guild: discord.Guild, role_id: int | None) -> discord.Role | None:
 def _format_discord_identifier(row: object) -> str:
     """Return the stored Discord username, falling back to the numeric ID."""
     return row["discord_username"] or row["discord_id"]
+
+
+def _nation_url(nation_id: int) -> str:
+    return f"https://politicsandwar.com/nation/id={nation_id}/"
+
+
+def _alliance_url(alliance_id: int) -> str:
+    return f"https://politicsandwar.com/alliance/id={alliance_id}"
+
+
+def _nation_embed(
+    nation: Nation,
+    registered_discord: str | None = None,
+) -> discord.Embed:
+    """Build a rich Discord embed for a PnW nation."""
+    embed = discord.Embed(
+        title=nation.nation_name,
+        url=_nation_url(nation.nation_id),
+        color=discord.Color.blue(),
+    )
+
+    embed.add_field(name="Leader", value=nation.leader_name or "—", inline=True)
+
+    # Alliance — hyperlinked name with position + seniority on the second line
+    if nation.alliance_id:
+        alliance_label = nation.alliance_name or str(nation.alliance_id)
+        alliance_val = f"[{alliance_label}]({_alliance_url(nation.alliance_id)})"
+    else:
+        alliance_val = "None"
+
+    pos = nation.alliance_position
+    if pos and pos not in ("NOALLIANCE", ""):
+        pos_line = pos.title()
+        if nation.alliance_seniority > 0:
+            pos_line += f" • {nation.alliance_seniority}d"
+        alliance_val += f"\n{pos_line}"
+
+    embed.add_field(name="Alliance", value=alliance_val, inline=True)
+
+    embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
+    embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
+
+    # Use a live Discord relative timestamp when available (GraphQL path);
+    # fall back to the plain string for REST-sourced nations.
+    if nation.last_active_unix:
+        embed.add_field(name="Last Active", value=f"<t:{nation.last_active_unix}:R>", inline=True)
+    elif nation.last_active:
+        embed.add_field(name="Last Active", value=nation.last_active, inline=True)
+
+    # Military capacity percentages
+    if nation.num_cities > 0:
+        max_sol = MAX_SOLDIERS_PER_CITY * nation.num_cities
+        max_tan = MAX_TANKS_PER_CITY * nation.num_cities
+        max_air = MAX_AIRCRAFT_PER_CITY * nation.num_cities
+        max_shi = MAX_SHIPS_PER_CITY * nation.num_cities
+
+        def pct(val: int, cap: int) -> str:
+            if cap == 0:
+                return f"{val:,} (—)"
+            return f"{val:,} ({val / cap * 100:.1f}%)"
+
+        military_text = (
+            f"🪖 Soldiers: {pct(nation.soldiers, max_sol)}\n"
+            f"⚔️ Tanks:    {pct(nation.tanks, max_tan)}\n"
+            f"✈️ Aircraft: {pct(nation.aircraft, max_air)}\n"
+            f"🚢 Ships:    {pct(nation.ships, max_shi)}"
+        )
+        embed.add_field(name="Military", value=military_text, inline=False)
+
+    if registered_discord:
+        embed.add_field(name="Discord", value=registered_discord, inline=True)
+    elif nation.discord_tag:
+        embed.add_field(name="PnW Discord", value=f"`{nation.discord_tag}`", inline=True)
+
+    return embed
+
+
+def _alliance_embed(info: AllianceInfo) -> discord.Embed:
+    """Build a rich Discord embed for a PnW alliance."""
+    title = f"{info.name} ({info.acronym})" if info.acronym else info.name
+    embed = discord.Embed(
+        title=title,
+        url=_alliance_url(info.alliance_id),
+        color=discord.Color.gold(),
+    )
+
+    if info.flag:
+        embed.set_thumbnail(url=info.flag)
+
+    embed.add_field(name="Score", value=f"{info.score:,.2f}", inline=True)
+    embed.add_field(name="Avg Score", value=f"{info.average_score:,.2f}", inline=True)
+    embed.add_field(name="Color", value=info.color.title() if info.color else "—", inline=True)
+    embed.add_field(name="Members", value=str(info.num_members), inline=True)
+    embed.add_field(name="Applicants", value=str(info.num_applicants), inline=True)
+    embed.add_field(name="Total Cities", value=str(info.total_cities), inline=True)
+    embed.add_field(name="Avg Cities", value=f"{info.avg_cities:.1f}", inline=True)
+
+    if info.discord_link:
+        embed.add_field(name="Discord", value=f"[Join Server]({info.discord_link})", inline=True)
+
+    return embed
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +227,6 @@ class FlameBot(discord.Client):
     async def _start_api(self) -> None:
         app = create_app(
             guild_getter=lambda: self.get_guild(config.GUILD_ID),
-            db=self.db,
             api_key=config.API_KEY,  # type: ignore[arg-type]
             role_config=RoleConfig(
                 verified_role_id=config.VERIFIED_ROLE_ID,
@@ -109,6 +241,7 @@ class FlameBot(discord.Client):
         log.info("bar3 API listening on port %d.", config.API_PORT)
 
     async def close(self) -> None:
+        await self.pnw.close()
         if self._api_runner is not None:
             await self._api_runner.cleanup()
         await super().close()
@@ -221,24 +354,55 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /who
+# /whois  (unified replacement for the former /who and /whois commands)
 # ---------------------------------------------------------------------------
 
 
 @bot.tree.command(
-    name="who",
-    description="Look up a nation by ID (PnW API) or a Discord username (database).",
+    name="whois",
+    description="Look up a PnW nation by ID, nation name, or @mention / Discord username.",
 )
 @app_commands.describe(
-    query="A numeric nation ID to fetch from PnW, or a Discord username to look up in the database."
+    query=(
+        "A nation ID, an @mention, a nation name, or a Discord username."
+    )
 )
-async def who(interaction: discord.Interaction, query: str) -> None:
+async def whois(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
 
     query = query.strip()
 
     # ------------------------------------------------------------------
-    # Numeric query → fetch nation from the PnW API
+    # 1. @mention → look up the mentioned member's registered nation
+    # ------------------------------------------------------------------
+    mention_match = _MENTION_RE.match(query)
+    if mention_match:
+        target_id = int(mention_match.group(1))
+        row = bot.db.get_by_discord_id(target_id)
+        if row is None:
+            await interaction.followup.send(
+                f"ℹ️ <@{target_id}> has not registered yet."
+            )
+            return
+
+        nation_id = row["nation_id"]
+        try:
+            nation = await bot.pnw.get_nation(nation_id)
+        except Exception:
+            nation = None
+
+        if nation:
+            embed = _nation_embed(nation, registered_discord=f"<@{target_id}>")
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send(
+                f"<@{target_id}> is registered with nation ID `{nation_id}` "
+                "(nation details unavailable)."
+            )
+        return
+
+    # ------------------------------------------------------------------
+    # 2. Numeric query → fetch nation from the PnW API by ID
     # ------------------------------------------------------------------
     if query.lstrip("-").isdigit():
         nation_id = int(query)
@@ -263,31 +427,35 @@ async def who(interaction: discord.Interaction, query: str) -> None:
             )
             return
 
-        # Also surface any local registration for this nation
+        # Surface any local registration for this nation
         row = bot.db.get_by_nation_id(nation_id)
-        discord_part = (
-            f"\n🔗 Discord: `{_format_discord_identifier(row)}`"
-            if row
-            else (f"\n🔗 PnW Discord: `{nation.discord_tag}`" if nation.discord_tag else "")
-        )
+        discord_user = f"`{_format_discord_identifier(row)}`" if row else None
 
-        await interaction.followup.send(
-            f"🌐 **{nation.nation_name}** (ID: `{nation_id}`)\n"
-            f"👤 Leader: {nation.leader_name}\n"
-            f"🏙️ Cities: {nation.num_cities}\n"
-            f"⭐ Score: {nation.score:,.2f}\n"
-            f"🕐 Last active: {nation.last_active or 'unknown'}"
-            f"{discord_part}",
-        )
+        embed = _nation_embed(nation, registered_discord=discord_user)
+        await interaction.followup.send(embed=embed)
         return
 
     # ------------------------------------------------------------------
-    # String query → look up Discord username in the database
+    # 3. Text → try nation name search (PnW API), then Discord username (DB)
     # ------------------------------------------------------------------
+    try:
+        nation = await bot.pnw.get_nation_by_name(query)
+    except Exception as exc:
+        log.exception("PnW API error while searching nation name '%s'", query)
+        nation = None
+
+    if nation:
+        row = bot.db.get_by_nation_id(nation.nation_id)
+        discord_user = f"`{_format_discord_identifier(row)}`" if row else None
+        embed = _nation_embed(nation, registered_discord=discord_user)
+        await interaction.followup.send(embed=embed)
+        return
+
+    # Fall back to Discord username lookup in the local database
     row = bot.db.get_by_discord_username(query)
     if row is None:
         await interaction.followup.send(
-            f"ℹ️ No registration found for Discord username `{query}`."
+            f"ℹ️ No nation or Discord user found for `{query}`."
         )
         return
 
@@ -299,158 +467,362 @@ async def who(interaction: discord.Interaction, query: str) -> None:
 
     stored_name = _format_discord_identifier(row)
     if nation:
-        await interaction.followup.send(
-            f"🔗 **{stored_name}** → **{nation.nation_name}** (ID: `{nation_id}`)\n"
-            f"👤 Leader: {nation.leader_name}\n"
-            f"🏙️ Cities: {nation.num_cities}\n"
-            f"⭐ Score: {nation.score:,.2f}\n"
-            f"🕐 Last active: {nation.last_active or 'unknown'}",
-        )
+        embed = _nation_embed(nation, registered_discord=f"`{stored_name}`")
+        await interaction.followup.send(embed=embed)
     else:
         await interaction.followup.send(
             f"**{stored_name}** is registered with nation ID `{nation_id}` "
-            f"(nation details unavailable).",
+            "(nation details unavailable)."
         )
 
 
 # ---------------------------------------------------------------------------
-# /whois
+# /unregister
 # ---------------------------------------------------------------------------
 
 
 @bot.tree.command(
-    name="whois",
-    description="Look up the registered nation for a Discord member.",
+    name="unregister",
+    description="Remove your Politics and War nation registration from this bot.",
 )
-@app_commands.describe(member="The Discord member to look up.")
-async def whois(interaction: discord.Interaction, member: discord.Member) -> None:
-    await interaction.response.defer()
-
-    row = bot.db.get_by_discord_id(member.id)
-    if row is None:
+async def unregister(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    deleted = bot.db.delete(interaction.user.id)
+    if deleted:
         await interaction.followup.send(
-            f"ℹ️ {member.mention} has not registered yet."
-        )
-        return
-
-    nation_id = row["nation_id"]
-    try:
-        nation = await bot.pnw.get_nation(nation_id)
-    except Exception:
-        nation = None
-
-    if nation:
-        await interaction.followup.send(
-            f"🔗 {member.mention} → **{nation.nation_name}** (ID: `{nation_id}`)\n"
-            f"👤 Leader: {nation.leader_name}\n"
-            f"🏙️ Cities: {nation.num_cities}\n"
-            f"⭐ Score: {nation.score:,.2f}\n"
-            f"🕐 Last active: {nation.last_active or 'unknown'}",
+            "✅ Your registration has been removed.", ephemeral=True
         )
     else:
         await interaction.followup.send(
-            f"**{member.display_name}** is registered with nation ID `{nation_id}` "
-            f"(nation details unavailable).",
+            "ℹ️ You are not currently registered.", ephemeral=True
         )
 
 
 # ---------------------------------------------------------------------------
-# /check_roles
+# /alliance
 # ---------------------------------------------------------------------------
 
 
 @bot.tree.command(
-    name="check_roles",
-    description="Sync your bar3 roles so bar3 can verify your access.",
+    name="alliance",
+    description="Look up a Politics and War alliance by ID or name.",
 )
-async def check_roles(interaction: discord.Interaction) -> None:
+@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+async def alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
 
-    guild = interaction.guild
-    if guild is None:
-        await interaction.followup.send("❌ This command must be used in a server.")
-        return
-
-    member = guild.get_member(interaction.user.id)
-    if member is None:
-        await interaction.followup.send("❌ Could not resolve your server membership.")
-        return
-
-    row = bot.db.get_by_discord_id(interaction.user.id)
-    if row is None:
-        await interaction.followup.send(
-            "ℹ️ You have not registered yet. Use `/register` to link your nation first.",
-        )
-        return
-
-    nation_id = row["nation_id"]
-
-    # Fetch nation to confirm it still exists
+    query = query.strip()
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        if query.isdigit():
+            info = await bot.pnw.get_alliance_by_id(int(query))
+        else:
+            info = await bot.pnw.get_alliance_by_name(query)
     except Exception as exc:
+        log.exception("PnW API error while fetching alliance '%s'", query)
         await interaction.followup.send(
-            f"❌ Could not reach the PnW API: {exc}"
+            f"❌ Could not reach the Politics and War API: {exc}"
         )
         return
 
-    if nation is None:
+    if info is None:
         await interaction.followup.send(
-            f"⚠️ Nation ID `{nation_id}` no longer exists. Roles were not updated.",
+            f"ℹ️ No alliance found for `{query}`."
         )
         return
 
-    added: list[str] = []
-    already_had: list[str] = []
+    await interaction.followup.send(embed=_alliance_embed(info))
 
-    # Ensure the Verified role is present
-    verified_role = _get_role(guild, config.VERIFIED_ROLE_ID)
-    if verified_role:
-        if verified_role not in member.roles:
-            try:
-                await member.add_roles(verified_role, reason=f"{BOT_NAME}: /check_roles")
-                added.append(verified_role.name)
-            except discord.Forbidden:
-                log.warning("Missing permission to assign role %s", verified_role)
-        else:
-            already_had.append(verified_role.name)
 
-    # bar3 client role
-    bar3_client_role = _get_role(guild, config.BAR3_CLIENT_ROLE_ID)
-    if bar3_client_role:
-        if bar3_client_role not in member.roles:
-            try:
-                await member.add_roles(bar3_client_role, reason=f"{BOT_NAME}: /check_roles")
-                added.append(bar3_client_role.name)
-            except discord.Forbidden:
-                log.warning("Missing permission to assign role %s", bar3_client_role)
-        else:
-            already_had.append(bar3_client_role.name)
+# ---------------------------------------------------------------------------
+# /config  (command group)
+# ---------------------------------------------------------------------------
 
-    # bar3 server role
-    bar3_server_role = _get_role(guild, config.BAR3_SERVER_ROLE_ID)
-    if bar3_server_role:
-        if bar3_server_role not in member.roles:
-            try:
-                await member.add_roles(bar3_server_role, reason=f"{BOT_NAME}: /check_roles")
-                added.append(bar3_server_role.name)
-            except discord.Forbidden:
-                log.warning("Missing permission to assign role %s", bar3_server_role)
-        else:
-            already_had.append(bar3_server_role.name)
+config_group = app_commands.Group(
+    name="config",
+    description="Bot configuration commands (admin only).",
+)
+bot.tree.add_command(config_group)
 
-    parts: list[str] = [
-        f"✅ Role check complete for {member.mention} "
-        f"(nation: **{nation.nation_name}**, ID: `{nation_id}`)."
-    ]
-    if added:
-        parts.append(f"**Added:** {', '.join(added)}")
-    if already_had:
-        parts.append(f"**Already had:** {', '.join(already_had)}")
-    if not added and not already_had:
-        parts.append("No configured roles to assign.")
+# /config slots  — nested subgroup
+config_slots_group = app_commands.Group(
+    name="slots",
+    description="Configure the alliances monitored by /slots.",
+)
+config_group.add_command(config_slots_group)
 
-    await interaction.followup.send("\n".join(parts))
+
+def _parse_alliance_ids(raw: str) -> list[int] | None:
+    """Parse a comma-separated string of positive integers. Returns None on error."""
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    result: list[int] = []
+    for part in parts:
+        if not part.isdigit() or int(part) <= 0:
+            return None
+        result.append(int(part))
+    return result or None
+
+
+@config_slots_group.command(
+    name="set",
+    description="Set the alliance IDs monitored by /slots (admin only).",
+)
+@app_commands.describe(
+    alliance_ids="Comma-separated Politics and War alliance IDs to monitor."
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    parsed = _parse_alliance_ids(alliance_ids)
+    if parsed is None:
+        await interaction.followup.send(
+            "❌ Invalid input. Please provide positive integers separated by commas.",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = interaction.guild_id or 0
+    bot.db.set_slots_alliances(guild_id, parsed)
+    log.info("Guild %d: /slots alliances set to %s by %s", guild_id, parsed, interaction.user)
+    await interaction.followup.send(
+        f"✅ /slots will now monitor alliance(s): `{', '.join(str(a) for a in parsed)}`",
+        ephemeral=True,
+    )
+
+
+@config_slots_set.error
+async def config_slots_set_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+@config_slots_group.command(
+    name="show",
+    description="Show the currently configured /slots alliance IDs.",
+)
+async def config_slots_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    ids = bot.db.get_slots_alliances(guild_id)
+    if not ids:
+        await interaction.followup.send(
+            "ℹ️ No alliances configured yet. Use `/config slots set` to configure.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"ℹ️ Currently monitoring: `{', '.join(str(a) for a in ids)}`",
+            ephemeral=True,
+        )
+
+
+@config_slots_group.command(
+    name="clear",
+    description="Clear the /slots alliance configuration (admin only).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def config_slots_clear(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    bot.db.set_slots_alliances(guild_id, [])
+    log.info("Guild %d: /slots alliances cleared by %s", guild_id, interaction.user)
+    await interaction.followup.send(
+        "✅ /slots alliance configuration cleared.", ephemeral=True
+    )
+
+
+@config_slots_clear.error
+async def config_slots_clear_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
+# /slots  — helpers + View
+# ---------------------------------------------------------------------------
+
+_EMBED_DESC_SOFT_LIMIT = 4000
+
+
+def _build_slots_embeds(
+    members: list[Nation],
+    war_counts: dict[int, int],
+    sort_key: str = "slots",
+) -> list[discord.Embed]:
+    """Return a list of Discord embeds for the /slots display.
+
+    *sort_key* is either ``"slots"`` (most open slots first, then by score) or
+    ``"score"`` (highest score first).
+    """
+    if sort_key == "slots":
+        sorted_members = sorted(
+            members,
+            key=lambda n: (
+                MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0),
+                n.score,
+            ),
+            reverse=True,
+        )
+    else:
+        sorted_members = sorted(members, key=lambda n: n.score, reverse=True)
+
+    alliances_map: dict[int, list[Nation]] = {}
+    for nation in sorted_members:
+        alliances_map.setdefault(nation.alliance_id, []).append(nation)
+
+    embeds: list[discord.Embed] = []
+
+    for alliance_id, nations in alliances_map.items():
+        alliance_name = nations[0].alliance_name or f"Alliance {alliance_id}"
+        total_open = sum(
+            MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0) for n in nations
+        )
+        section_lines: list[str] = []
+        for nation in nations:
+            active_def = war_counts.get(nation.nation_id, 0)
+            open_slots = MAX_DEFENSIVE_SLOTS - active_def
+            section_lines.append(
+                f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) "
+                f"— 🏙️ {nation.num_cities} "
+                f"| ⭐ {nation.score:,.0f} "
+                f"| 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS} slots"
+            )
+
+        chunk: list[str] = []
+        chunk_len = 0
+        part = 1
+        footer = f"{len(nations)} members · {total_open} open slots"
+
+        for line in section_lines:
+            needed = len(line) + (1 if chunk else 0)
+            if chunk_len + needed > _EMBED_DESC_SOFT_LIMIT and chunk:
+                title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
+                e = discord.Embed(
+                    title=title,
+                    description="\n".join(chunk),
+                    color=discord.Color.green(),
+                )
+                e.set_footer(text=footer)
+                embeds.append(e)
+                chunk = [line]
+                chunk_len = len(line)
+                part += 1
+            else:
+                chunk.append(line)
+                chunk_len += needed
+
+        if chunk:
+            title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
+            e = discord.Embed(
+                title=title,
+                description="\n".join(chunk),
+                color=discord.Color.green(),
+            )
+            e.set_footer(text=footer)
+            embeds.append(e)
+
+    return embeds
+
+
+class SlotsView(discord.ui.View):
+    """Sort-toggle buttons attached to the /slots response."""
+
+    def __init__(self, members: list[Nation], war_counts: dict[int, int]) -> None:
+        super().__init__(timeout=600)
+        self.members = members
+        self.war_counts = war_counts
+
+    async def _send_sorted(
+        self, interaction: discord.Interaction, sort_key: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        embeds = _build_slots_embeds(self.members, self.war_counts, sort_key)
+        for i in range(0, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[i : i + 10], ephemeral=True)
+
+    @discord.ui.button(label="Sort: Open Slots", style=discord.ButtonStyle.primary, emoji="🛡️")
+    async def sort_slots(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._send_sorted(interaction, "slots")
+
+    @discord.ui.button(label="Sort: Score", style=discord.ButtonStyle.secondary, emoji="⭐")
+    async def sort_score(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._send_sorted(interaction, "score")
+
+
+# ---------------------------------------------------------------------------
+# /slots
+# ---------------------------------------------------------------------------
+
+
+@bot.tree.command(
+    name="slots",
+    description="Show open defensive slots for members of the configured alliances.",
+)
+async def slots(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    guild_id = interaction.guild_id or 0
+    alliance_ids = bot.db.get_slots_alliances(guild_id)
+
+    if not alliance_ids:
+        await interaction.followup.send(
+            "ℹ️ No alliances configured. An admin can use `/config slots set` to set them up."
+        )
+        return
+
+    # Fetch alliance members
+    try:
+        members = await bot.pnw.get_alliance_members(alliance_ids)
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance members")
+        await interaction.followup.send(
+            f"❌ Could not reach the Politics and War API: {exc}"
+        )
+        return
+
+    if not members:
+        await interaction.followup.send(
+            "ℹ️ No active members found for the configured alliance(s)."
+        )
+        return
+
+    # Fetch active defensive war counts for all members
+    nation_ids = [n.nation_id for n in members]
+    try:
+        war_counts = await bot.pnw.get_active_war_counts(nation_ids)
+    except Exception:
+        log.exception("PnW API error while fetching war counts")
+        war_counts = {}
+
+    # Default: sorted by open slots descending (most vulnerable first)
+    embeds = _build_slots_embeds(members, war_counts, sort_key="slots")
+
+    # Send data embeds (up to 10 per message)
+    BATCH = 10
+    for i in range(0, len(embeds), BATCH):
+        await interaction.followup.send(embeds=embeds[i : i + BATCH])
+
+    # Send sort-toggle control panel
+    view = SlotsView(members, war_counts)
+    await interaction.followup.send("**Sort:**", view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -459,3 +831,4 @@ async def check_roles(interaction: discord.Interaction) -> None:
 
 if __name__ == "__main__":
     bot.run(config.DISCORD_TOKEN)
+

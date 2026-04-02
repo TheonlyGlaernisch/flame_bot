@@ -2,12 +2,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import aiohttp
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
 PNW_REST_URL = "https://politicsandwar.com/api/nation/"
+
+# Maximum military units per city (used for capacity percentage calculations)
+MAX_SOLDIERS_PER_CITY = 15_000
+MAX_TANKS_PER_CITY = 1_250
+MAX_AIRCRAFT_PER_CITY = 75
+MAX_SHIPS_PER_CITY = 15
+
+# Maximum concurrent defensive wars per nation
+MAX_DEFENSIVE_SLOTS = 3
 
 
 @dataclass
@@ -18,15 +28,103 @@ class Nation:
     discord_tag: str  # the Discord handle stored on the nation (may be empty)
     num_cities: int = 0
     score: float = 0.0
-    # GraphQL sets this to a raw timestamp; REST sets it to "X minutes ago"
+    # GraphQL sets this to a raw ISO timestamp; REST sets it to "X minutes ago"
     last_active: str = ""
+    # Unix timestamp derived from last_active (0 when unavailable, e.g. REST path)
+    last_active_unix: int = 0
     # Only populated by get_nation_rest; 0 when sourced from GraphQL
     minutes_since_active: int = 0
+    # Military units
+    soldiers: int = 0
+    tanks: int = 0
+    aircraft: int = 0
+    ships: int = 0
+    # Alliance info
+    alliance_id: int = 0
+    alliance_name: str = ""
+    # Alliance role and tenure
+    alliance_position: str = ""  # "MEMBER", "OFFICER", "HEIR", "LEADER", …
+    alliance_seniority: int = 0  # days in current alliance
+
+
+@dataclass
+class AllianceInfo:
+    """Aggregated statistics for a Politics and War alliance."""
+
+    alliance_id: int
+    name: str
+    acronym: str
+    score: float
+    average_score: float
+    color: str
+    flag: str
+    discord_link: str
+    num_members: int    # active (non-vmode, non-applicant) members
+    num_applicants: int
+    total_cities: int   # sum of cities across active members
+    avg_cities: float
+
+
+_NATION_FIELDS = """
+    id
+    nation_name
+    leader_name
+    discord
+    num_cities
+    score
+    last_active
+    soldiers
+    tanks
+    aircraft
+    ships
+    alliance_id
+    alliance_position
+    alliance_seniority
+    alliance {
+        name
+    }
+"""
+
+_ALLIANCE_MEMBER_FIELDS = """
+    id
+    num_cities
+    alliance_position
+    vacation_mode_turns
+"""
+
+
+def _parse_last_active_unix(value: str) -> int:
+    """Convert an ISO datetime string to a Unix timestamp, or return 0."""
+    if not value:
+        return 0
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (ValueError, OSError):
+        return 0
 
 
 class PnWClient:
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
+        self._session: aiohttp.ClientSession | None = None
+
+    # ------------------------------------------------------------------
+    # Session management
+    # ------------------------------------------------------------------
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Return the shared HTTP session, creating it lazily if needed."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        """Close the underlying HTTP session."""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
 
     # ------------------------------------------------------------------
     # GraphQL helpers
@@ -34,14 +132,14 @@ class PnWClient:
 
     async def _query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         url = f"{PNW_GRAPHQL_URL}?api_key={self._api_key}"
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json={"query": query, "variables": variables},
-                headers={"Content-Type": "application/json"},
-            ) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
+        session = self._get_session()
+        async with session.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers={"Content-Type": "application/json"},
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
         if "errors" in data:
             raise RuntimeError(
                 "PnW API returned errors: "
@@ -50,31 +148,13 @@ class PnWClient:
         return data
 
     # ------------------------------------------------------------------
-    # Public helpers
+    # Private helpers
     # ------------------------------------------------------------------
 
-    async def get_nation(self, nation_id: int) -> Optional[Nation]:
-        """Fetch a nation by its numeric ID. Returns None if not found."""
-        query = """
-        query GetNation($id: [Int]) {
-            nations(id: $id, first: 1) {
-                data {
-                    id
-                    nation_name
-                    leader_name
-                    discord
-                    num_cities
-                    score
-                    last_active
-                }
-            }
-        }
-        """
-        data = await self._query(query, {"id": [nation_id]})
-        nations = data.get("data", {}).get("nations", {}).get("data", [])
-        if not nations:
-            return None
-        n = nations[0]
+    @staticmethod
+    def _parse_nation(n: dict[str, Any]) -> Nation:
+        alliance = n.get("alliance") or {}
+        la_str = n.get("last_active", "") or ""
         return Nation(
             nation_id=int(n["id"]),
             nation_name=n.get("nation_name", ""),
@@ -82,8 +162,174 @@ class PnWClient:
             discord_tag=n.get("discord", "") or "",
             num_cities=int(n.get("num_cities") or 0),
             score=float(n.get("score") or 0.0),
-            last_active=n.get("last_active", "") or "",
+            last_active=la_str,
+            last_active_unix=_parse_last_active_unix(la_str),
+            soldiers=int(n.get("soldiers") or 0),
+            tanks=int(n.get("tanks") or 0),
+            aircraft=int(n.get("aircraft") or 0),
+            ships=int(n.get("ships") or 0),
+            alliance_id=int(n.get("alliance_id") or 0),
+            alliance_name=alliance.get("name", "") or "",
+            alliance_position=n.get("alliance_position", "") or "",
+            alliance_seniority=int(n.get("alliance_seniority") or 0),
         )
+
+    @staticmethod
+    def _parse_alliance(a: dict[str, Any]) -> AllianceInfo:
+        nations = a.get("nations") or []
+        active = [
+            n for n in nations
+            if n.get("alliance_position", "") not in ("", "APPLICANT", "NOALLIANCE")
+            and int(n.get("vacation_mode_turns") or 0) == 0
+        ]
+        applicants = [n for n in nations if n.get("alliance_position", "") == "APPLICANT"]
+        total_cities = sum(int(n.get("num_cities") or 0) for n in active)
+        avg_cities = total_cities / len(active) if active else 0.0
+        return AllianceInfo(
+            alliance_id=int(a["id"]),
+            name=a.get("name", ""),
+            acronym=a.get("acronym", "") or "",
+            score=float(a.get("score") or 0.0),
+            average_score=float(a.get("average_score") or 0.0),
+            color=a.get("color", "") or "",
+            flag=a.get("flag", "") or "",
+            discord_link=a.get("discord_link", "") or "",
+            num_members=len(active),
+            num_applicants=len(applicants),
+            total_cities=total_cities,
+            avg_cities=avg_cities,
+        )
+
+    # ------------------------------------------------------------------
+    # Public helpers
+    # ------------------------------------------------------------------
+
+    async def get_nation(self, nation_id: int) -> Optional[Nation]:
+        """Fetch a nation by its numeric ID. Returns None if not found."""
+        query = f"""
+        query GetNation($id: [Int]) {{
+            nations(id: $id, first: 1) {{
+                data {{
+                    {_NATION_FIELDS}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"id": [nation_id]})
+        nations = data.get("data", {}).get("nations", {}).get("data", [])
+        if not nations:
+            return None
+        return self._parse_nation(nations[0])
+
+    async def get_nation_by_name(self, name: str) -> Optional[Nation]:
+        """Search for a nation by name. Returns the first match or None."""
+        query = f"""
+        query GetNationByName($name: String) {{
+            nations(nation_name: $name, first: 1) {{
+                data {{
+                    {_NATION_FIELDS}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"name": name})
+        nations = data.get("data", {}).get("nations", {}).get("data", [])
+        if not nations:
+            return None
+        return self._parse_nation(nations[0])
+
+    async def get_alliance_members(self, alliance_ids: list[int]) -> list[Nation]:
+        """Fetch all non-vacation-mode members of the given alliances."""
+        query = f"""
+        query GetAllianceMembers($alliance_id: [Int]) {{
+            nations(alliance_id: $alliance_id, vmode: false, first: 500) {{
+                data {{
+                    {_NATION_FIELDS}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"alliance_id": alliance_ids})
+        nations = data.get("data", {}).get("nations", {}).get("data", [])
+        return [self._parse_nation(n) for n in nations]
+
+    async def get_active_war_counts(self, nation_ids: list[int]) -> dict[int, int]:
+        """Return a mapping of nation_id -> active defensive war count.
+
+        Nations not present in the returned dict have zero active defensive wars.
+        """
+        if not nation_ids:
+            return {}
+        query = """
+        query GetActiveWars($defid: [Int]) {
+            wars(defid: $defid, active: true, first: 500) {
+                data {
+                    def_id
+                }
+            }
+        }
+        """
+        data = await self._query(query, {"defid": nation_ids})
+        wars = data.get("data", {}).get("wars", {}).get("data", [])
+        counts: dict[int, int] = {}
+        for war in wars:
+            def_id = int(war["def_id"])
+            counts[def_id] = counts.get(def_id, 0) + 1
+        return counts
+
+    async def get_alliance_by_id(self, alliance_id: int) -> Optional[AllianceInfo]:
+        """Fetch alliance statistics by numeric ID. Returns None if not found."""
+        query = f"""
+        query GetAlliance($id: [Int]) {{
+            alliances(id: $id, first: 1) {{
+                data {{
+                    id
+                    name
+                    acronym
+                    score
+                    average_score
+                    color
+                    flag
+                    discord_link
+                    nations {{
+                        {_ALLIANCE_MEMBER_FIELDS}
+                    }}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"id": [alliance_id]})
+        alliances = data.get("data", {}).get("alliances", {}).get("data", [])
+        if not alliances:
+            return None
+        return self._parse_alliance(alliances[0])
+
+    async def get_alliance_by_name(self, name: str) -> Optional[AllianceInfo]:
+        """Search for an alliance by name. Returns the first match or None."""
+        query = f"""
+        query GetAllianceByName($name: String) {{
+            alliances(name: $name, first: 1) {{
+                data {{
+                    id
+                    name
+                    acronym
+                    score
+                    average_score
+                    color
+                    flag
+                    discord_link
+                    nations {{
+                        {_ALLIANCE_MEMBER_FIELDS}
+                    }}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"name": name})
+        alliances = data.get("data", {}).get("alliances", {}).get("data", [])
+        if not alliances:
+            return None
+        return self._parse_alliance(alliances[0])
 
     async def get_nation_rest(self, nation_id: int) -> Optional[Nation]:
         """Fetch a nation by its numeric ID using the PnW v1 REST API.

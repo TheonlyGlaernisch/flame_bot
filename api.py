@@ -13,13 +13,15 @@ GET /
 GET /api/roles/{discord_id}
     Returns the bar3 role status for the given Discord user ID.
 
+    Roles are manually assigned and stripped in Discord; no bot registration
+    is required.  The endpoint simply reflects the member's current roles.
+
     Requires the ``X-API-Key`` request header to match the ``API_KEY``
     environment variable.
 
     Response (200 OK):
     {
         "discord_id": "123456789",
-        "registered": true,
         "roles": {
             "verified":    true,
             "bar3_client": false,
@@ -30,6 +32,8 @@ GET /api/roles/{discord_id}
     Error responses:
     • 401  { "error": "Unauthorized" }   — missing or wrong API key
     • 400  { "error": "Invalid discord_id" }
+    • 503  { "error": "Bot not ready" }  — guild cache not populated yet
+                                            (safe to retry after a short delay)
 """
 from __future__ import annotations
 
@@ -38,8 +42,6 @@ from dataclasses import dataclass
 
 import discord
 from aiohttp import web
-
-from database import Database
 
 log = logging.getLogger("flame_bot.api")
 
@@ -59,7 +61,6 @@ def _check_api_key(request: web.Request, api_key: str) -> bool:
 
 def create_app(
     guild_getter,         # callable() -> discord.Guild | None
-    db: Database,
     api_key: str,
     role_config: RoleConfig | None = None,
 ) -> web.Application:
@@ -72,8 +73,6 @@ def create_app(
         (or ``None`` if the bot isn't ready yet).  Keeping it as a callable
         rather than a direct reference makes the app easy to test without a
         real Discord connection.
-    db:
-        The shared ``Database`` instance.
     api_key:
         The secret that callers must supply via the ``X-API-Key`` header.
     role_config:
@@ -96,9 +95,6 @@ def create_app(
 
         discord_id = int(discord_id_str)
 
-        row = db.get_by_discord_id(discord_id)
-        registered = row is not None
-
         roles: dict[str, bool] = {
             "verified": False,
             "bar3_client": False,
@@ -106,21 +102,25 @@ def create_app(
         }
 
         guild: discord.Guild | None = guild_getter()
-        if guild is not None:
-            member = guild.get_member(discord_id)
-            if member is not None:
-                member_role_ids = {r.id for r in member.roles}
-                if role_config.verified_role_id and role_config.verified_role_id in member_role_ids:
-                    roles["verified"] = True
-                if role_config.bar3_client_role_id and role_config.bar3_client_role_id in member_role_ids:
-                    roles["bar3_client"] = True
-                if role_config.bar3_server_role_id and role_config.bar3_server_role_id in member_role_ids:
-                    roles["bar3_server"] = True
+        if guild is None:
+            return web.json_response(
+                {"error": "Bot not ready"},
+                status=503,
+            )
+
+        member = guild.get_member(discord_id)
+        if member is not None:
+            member_role_ids = {r.id for r in member.roles}
+            if role_config.verified_role_id and role_config.verified_role_id in member_role_ids:
+                roles["verified"] = True
+            if role_config.bar3_client_role_id and role_config.bar3_client_role_id in member_role_ids:
+                roles["bar3_client"] = True
+            if role_config.bar3_server_role_id and role_config.bar3_server_role_id in member_role_ids:
+                roles["bar3_server"] = True
 
         return web.json_response(
             {
                 "discord_id": str(discord_id),
-                "registered": registered,
                 "roles": roles,
             }
         )

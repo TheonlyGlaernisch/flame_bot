@@ -13,6 +13,7 @@ class Database:
         self._col = self._client["TRF"]["registrations"]
         self._col.create_index("discord_id", unique=True)
         self._col.create_index("nation_id", unique=True)
+        self._guild_config = self._client["TRF"]["guild_config"]
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -51,3 +52,22 @@ class Database:
         """Remove a registration. Returns True if a row was deleted."""
         result = self._col.delete_one({"discord_id": str(discord_id)})
         return result.deleted_count > 0
+
+    # ------------------------------------------------------------------
+    # Guild config helpers
+    # ------------------------------------------------------------------
+
+    def get_slots_alliances(self, guild_id: int) -> list[int]:
+        """Return the list of alliance IDs configured for /slots in this guild."""
+        doc = self._guild_config.find_one({"guild_id": str(guild_id)}, {"_id": 0})
+        if doc is None:
+            return []
+        return [int(a) for a in doc.get("slots_alliances", [])]
+
+    def set_slots_alliances(self, guild_id: int, alliance_ids: list[int]) -> None:
+        """Set the alliance IDs used by /slots for this guild."""
+        self._guild_config.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": {"guild_id": str(guild_id), "slots_alliances": alliance_ids}},
+            upsert=True,
+        )

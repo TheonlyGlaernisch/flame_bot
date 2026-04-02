@@ -9,7 +9,6 @@ A Discord bot for the **bar3** client/server system that integrates with [Politi
 | `/register <nation_id>` | Link your Discord account to your PnW nation (with verification) |
 | `/who <query>` | Numeric ID → fetch nation from PnW API; Discord username → look up in database |
 | `/whois <member>` | Look up the registered nation for a Discord member |
-| `/check_roles` | Sync your bar3 roles — bar3 uses this to verify your access when you log in with Discord |
 
 ### bar3 HTTP API
 
@@ -27,7 +26,6 @@ curl -H "X-API-Key: <your_api_key>" http://localhost:8080/api/roles/123456789
 ```json
 {
   "discord_id": "123456789",
-  "registered": true,
   "roles": {
     "verified":    true,
     "bar3_client": true,
@@ -38,7 +36,6 @@ curl -H "X-API-Key: <your_api_key>" http://localhost:8080/api/roles/123456789
 
 | Field | Description |
 |---|---|
-| `registered` | Whether the user has linked a PnW nation via `/register` |
 | `roles.verified` | Whether the user holds the `VERIFIED_ROLE_ID` Discord role |
 | `roles.bar3_client` | Whether the user holds the `BAR3_CLIENT_ROLE_ID` Discord role |
 | `roles.bar3_server` | Whether the user holds the `BAR3_SERVER_ROLE_ID` Discord role |
