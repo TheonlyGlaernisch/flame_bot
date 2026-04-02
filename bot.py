@@ -37,6 +37,15 @@ Commands
     Show an embed listing all non-vacation-mode members of the configured
     alliances with their score, city count, and open defensive slots.
     Includes sort buttons to toggle between open-slots and score ordering.
+    The sort buttons edit the original embeds in-place.
+
+/roles setup [econ] [milcom] [ia] [gov]
+    (Admin only) Map existing server roles to government departments:
+    Economics, Military Command, Internal Affairs, and Basic Gov.
+    All parameters are optional; omitting one leaves that department unchanged.
+
+/roles show
+    Show the currently configured government department roles.
 
 """
 from __future__ import annotations
@@ -741,30 +750,39 @@ def _build_slots_embeds(
 class SlotsView(discord.ui.View):
     """Sort-toggle buttons attached to the /slots response."""
 
-    def __init__(self, members: list[Nation], war_counts: dict[int, int]) -> None:
+    def __init__(
+        self,
+        members: list[Nation],
+        war_counts: dict[int, int],
+        data_messages: list[discord.Message],
+    ) -> None:
         super().__init__(timeout=600)
         self.members = members
         self.war_counts = war_counts
+        self.data_messages = data_messages
 
-    async def _send_sorted(
+    async def _resort(
         self, interaction: discord.Interaction, sort_key: str
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         embeds = _build_slots_embeds(self.members, self.war_counts, sort_key)
-        for i in range(0, len(embeds), 10):
-            await interaction.followup.send(embeds=embeds[i : i + 10], ephemeral=True)
+        BATCH = 10
+        batches = [embeds[i : i + BATCH] for i in range(0, len(embeds), BATCH)]
+        for i, msg in enumerate(self.data_messages):
+            if i < len(batches):
+                await msg.edit(embeds=batches[i])
 
     @discord.ui.button(label="Sort: Open Slots", style=discord.ButtonStyle.primary, emoji="🛡️")
     async def sort_slots(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._send_sorted(interaction, "slots")
+        await self._resort(interaction, "slots")
 
     @discord.ui.button(label="Sort: Score", style=discord.ButtonStyle.secondary, emoji="⭐")
     async def sort_score(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._send_sorted(interaction, "score")
+        await self._resort(interaction, "score")
 
 
 # ---------------------------------------------------------------------------
@@ -815,14 +833,121 @@ async def slots(interaction: discord.Interaction) -> None:
     # Default: sorted by open slots descending (most vulnerable first)
     embeds = _build_slots_embeds(members, war_counts, sort_key="slots")
 
-    # Send data embeds (up to 10 per message)
+    # Send data embeds (up to 10 per message) and collect the Message objects
+    # so the sort buttons can edit them in-place.
     BATCH = 10
+    data_messages: list[discord.Message] = []
     for i in range(0, len(embeds), BATCH):
-        await interaction.followup.send(embeds=embeds[i : i + BATCH])
+        msg = await interaction.followup.send(embeds=embeds[i : i + BATCH], wait=True)
+        data_messages.append(msg)
 
     # Send sort-toggle control panel
-    view = SlotsView(members, war_counts)
+    view = SlotsView(members, war_counts, data_messages)
     await interaction.followup.send("**Sort:**", view=view)
+
+
+# ---------------------------------------------------------------------------
+# /roles  (command group)
+# ---------------------------------------------------------------------------
+
+_GOV_DEPT_LABELS: dict[str, str] = {
+    "econ": "Economics",
+    "milcom": "Military Command",
+    "ia": "Internal Affairs",
+    "gov": "Basic Gov",
+}
+
+roles_group = app_commands.Group(
+    name="roles",
+    description="Government role configuration.",
+)
+bot.tree.add_command(roles_group)
+
+
+@roles_group.command(
+    name="setup",
+    description="Map existing server roles to government departments (admin only).",
+)
+@app_commands.describe(
+    econ="Role that counts as Economics.",
+    milcom="Role that counts as Military Command.",
+    ia="Role that counts as Internal Affairs.",
+    gov="Role that counts as Basic Gov.",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def roles_setup(
+    interaction: discord.Interaction,
+    econ: discord.Role | None = None,
+    milcom: discord.Role | None = None,
+    ia: discord.Role | None = None,
+    gov: discord.Role | None = None,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    guild_id = interaction.guild_id or 0
+    current = bot.db.get_gov_roles(guild_id)
+
+    updates = {
+        "econ": econ.id if econ else current["econ"],
+        "milcom": milcom.id if milcom else current["milcom"],
+        "ia": ia.id if ia else current["ia"],
+        "gov": gov.id if gov else current["gov"],
+    }
+    bot.db.set_gov_roles(guild_id, updates)
+    log.info("Guild %d: gov roles updated to %s by %s", guild_id, updates, interaction.user)
+
+    guild = interaction.guild
+    lines: list[str] = []
+    for key, label in _GOV_DEPT_LABELS.items():
+        role_id = updates[key]
+        if role_id and guild:
+            role = guild.get_role(role_id)
+            lines.append(f"**{label}:** {role.mention if role else f'<@&{role_id}>'}")
+        else:
+            lines.append(f"**{label}:** *(not set)*")
+
+    await interaction.followup.send(
+        "✅ Government role configuration updated:\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@roles_setup.error
+async def roles_setup_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+@roles_group.command(
+    name="show",
+    description="Show the currently configured government department roles.",
+)
+async def roles_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    config_roles = bot.db.get_gov_roles(guild_id)
+    guild = interaction.guild
+
+    lines: list[str] = []
+    for key, label in _GOV_DEPT_LABELS.items():
+        role_id = config_roles[key]
+        if role_id and guild:
+            role = guild.get_role(role_id)
+            lines.append(f"**{label}:** {role.mention if role else f'<@&{role_id}>'}")
+        else:
+            lines.append(f"**{label}:** *(not set)*")
+
+    await interaction.followup.send(
+        "ℹ️ Current government role configuration:\n" + "\n".join(lines),
+        ephemeral=True,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -222,9 +222,9 @@ class PnWClient:
         return self._parse_nation(nations[0])
 
     async def get_nation_by_name(self, name: str) -> Optional[Nation]:
-        """Search for a nation by name. Returns the first match or None."""
+        """Search for a nation by name (case-insensitive). Returns the first match or None."""
         query = f"""
-        query GetNationByName($name: String) {{
+        query GetNationByName($name: [String]) {{
             nations(nation_name: $name, first: 1) {{
                 data {{
                     {_NATION_FIELDS}
@@ -232,7 +232,7 @@ class PnWClient:
             }}
         }}
         """
-        data = await self._query(query, {"name": name})
+        data = await self._query(query, {"name": [name]})
         nations = data.get("data", {}).get("nations", {}).get("data", [])
         if not nations:
             return None
@@ -305,9 +305,9 @@ class PnWClient:
         return self._parse_alliance(alliances[0])
 
     async def get_alliance_by_name(self, name: str) -> Optional[AllianceInfo]:
-        """Search for an alliance by name. Returns the first match or None."""
+        """Search for an alliance by name (case-insensitive). Returns the first match or None."""
         query = f"""
-        query GetAllianceByName($name: String) {{
+        query GetAllianceByName($name: [String]) {{
             alliances(name: $name, first: 1) {{
                 data {{
                     id
@@ -325,7 +325,7 @@ class PnWClient:
             }}
         }}
         """
-        data = await self._query(query, {"name": name})
+        data = await self._query(query, {"name": [name]})
         alliances = data.get("data", {}).get("alliances", {}).get("data", [])
         if not alliances:
             return None
