@@ -159,6 +159,24 @@ def _nation_embed(
     embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
     embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
 
+    # Projects: count + short abbreviations of built projects
+    if nation.projects_built:
+        projects_value = f"{nation.num_projects} — {', '.join(nation.projects_built)}"
+    else:
+        projects_value = "0"
+    embed.add_field(name="Projects", value=projects_value, inline=False)
+
+    # Average infrastructure estimate
+    # PnW score = (cities-1)*100 + 10  [city score]
+    #           + projects * 20         [project score, 20 pts each]
+    #           + total_infra / 400     [infra score, 1 pt per 400 infra]
+    # Solving for avg_infra:
+    #   avg_infra = (score - (cities-1)*100 - 10 - projects*20) * 400 / cities
+    if nation.num_cities > 0:
+        infra_score = nation.score - (nation.num_cities - 1) * 100 - 10 - nation.num_projects * 20
+        avg_infra = infra_score * 400 / nation.num_cities
+        embed.add_field(name="Avg Infra", value=f"{avg_infra:,.2f}", inline=True)
+
     # Use a live Discord relative timestamp when available (GraphQL path);
     # fall back to the plain string for REST-sourced nations.
     if nation.last_active_unix:
@@ -917,6 +935,7 @@ async def slots(interaction: discord.Interaction) -> None:
 # ---------------------------------------------------------------------------
 
 _GOV_DEPT_LABELS: dict[str, str] = {
+    "leader": "Leader",
     "econ": "Economics",
     "milcom": "Military Command",
     "ia": "Internal Affairs",
@@ -935,6 +954,7 @@ bot.tree.add_command(roles_group)
     description="Map existing server roles to government departments (admin only).",
 )
 @app_commands.describe(
+    leader="Role that counts as Leader.",
     econ="Role that counts as Economics.",
     milcom="Role that counts as Military Command.",
     ia="Role that counts as Internal Affairs.",
@@ -943,6 +963,7 @@ bot.tree.add_command(roles_group)
 @app_commands.checks.has_permissions(administrator=True)
 async def roles_setup(
     interaction: discord.Interaction,
+    leader: discord.Role | None = None,
     econ: discord.Role | None = None,
     milcom: discord.Role | None = None,
     ia: discord.Role | None = None,
@@ -954,6 +975,7 @@ async def roles_setup(
     current = bot.db.get_gov_roles(guild_id)
 
     updates = {
+        "leader": leader.id if leader else current["leader"],
         "econ": econ.id if econ else current["econ"],
         "milcom": milcom.id if milcom else current["milcom"],
         "ia": ia.id if ia else current["ia"],
@@ -1022,11 +1044,15 @@ async def roles_show(interaction: discord.Interaction) -> None:
 
 # Emoji prefix for each department shown in the /gov embed.
 _GOV_DEPT_EMOJI: dict[str, str] = {
+    "leader": "👑",
     "econ": "💰",
     "milcom": "⚔️",
     "ia": "🤝",
     "gov": "🏛️",
 }
+
+# Departments hidden from the /gov embed (still configurable via /roles setup).
+_GOV_HIDDEN_FROM_EMBED: frozenset[str] = frozenset({"gov"})
 
 
 @bot.tree.command(
@@ -1059,6 +1085,8 @@ async def gov(interaction: discord.Interaction) -> None:
 
     total = 0
     for key, label in _GOV_DEPT_LABELS.items():
+        if key in _GOV_HIDDEN_FROM_EMBED:
+            continue
         role_id = config_roles[key]
         if not role_id:
             continue
