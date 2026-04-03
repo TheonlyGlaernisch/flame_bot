@@ -9,7 +9,8 @@ import aiohttp
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
 PNW_TEST_GRAPHQL_URL = "https://test.politicsandwar.com/graphql"
-PNW_REST_URL = "https://politicsandwar.com/api/nation/"
+PNW_REST_URL = "https://politicsandwar.com/api/"
+PNW_TEST_REST_URL = "https://test.politicsandwar.com/api/"
 
 # Maximum military units per city (used for capacity percentage calculations)
 MAX_SOLDIERS_PER_CITY = 15_000
@@ -181,9 +182,17 @@ def _parse_last_active_unix(value: str) -> int:
 
 
 class PnWClient:
-    def __init__(self, api_key: str, graphql_url: str = PNW_GRAPHQL_URL) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        graphql_url: str = PNW_GRAPHQL_URL,
+        rest_url: str | None = None,
+    ) -> None:
         self._api_key = api_key
         self._graphql_url = graphql_url
+        # When set, all nation/alliance lookups use this REST base URL instead
+        # of GraphQL (e.g. "https://test.politicsandwar.com/api/").
+        self._rest_url = rest_url
         self._session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
@@ -285,6 +294,8 @@ class PnWClient:
 
     async def get_nation(self, nation_id: int) -> Optional[Nation]:
         """Fetch a nation by its numeric ID. Returns None if not found."""
+        if self._rest_url is not None:
+            return await self.get_nation_rest(nation_id)
         query = f"""
         query GetNation($id: [Int]) {{
             nations(id: $id, first: 1) {{
@@ -302,6 +313,25 @@ class PnWClient:
 
     async def get_nation_by_name(self, name: str) -> Optional[Nation]:
         """Search for a nation by name (case-insensitive). Returns the first match or None."""
+        if self._rest_url is not None:
+            url = f"{self._rest_url}nation/?nation_name={name}&key={self._api_key}"
+            session = self._get_session()
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
+            if not data.get("success"):
+                return None
+            minutes = int(data.get("minutessinceactive") or 0)
+            return Nation(
+                nation_id=int(data.get("nationid") or 0),
+                nation_name=data.get("name", ""),
+                leader_name=data.get("leadername", ""),
+                discord_tag="",
+                num_cities=int(data.get("cities") or 0),
+                score=float(data.get("score") or 0.0),
+                last_active=f"{minutes} minutes ago" if minutes else "",
+                minutes_since_active=minutes,
+            )
         query = f"""
         query GetNationByName($name: [String]) {{
             nations(nation_name: $name, first: 1) {{
@@ -323,7 +353,11 @@ class PnWClient:
         Returns the first match or None.  The comparison is done server-side
         by the PnW API; the caller should verify with :meth:`discord_matches`
         when an exact match is required.
+
+        Not supported by the v1 REST API; always returns None in REST mode.
         """
+        if self._rest_url is not None:
+            return None
         query = f"""
         query GetNationByDiscord($discord: [String]) {{
             nations(discord: $discord, first: 1) {{
@@ -380,6 +414,8 @@ class PnWClient:
 
     async def get_alliance_by_id(self, alliance_id: int) -> Optional[AllianceInfo]:
         """Fetch alliance statistics by numeric ID. Returns None if not found."""
+        if self._rest_url is not None:
+            return await self._get_alliance_rest(alliance_id)
         query = f"""
         query GetAlliance($id: [Int]) {{
             alliances(id: $id, first: 1) {{
@@ -406,7 +442,12 @@ class PnWClient:
         return self._parse_alliance(alliances[0])
 
     async def get_alliance_by_name(self, name: str) -> Optional[AllianceInfo]:
-        """Search for an alliance by name (case-insensitive). Returns the first match or None."""
+        """Search for an alliance by name (case-insensitive). Returns the first match or None.
+
+        Not supported by the v1 REST API; always returns None in REST mode.
+        """
+        if self._rest_url is not None:
+            return None
         query = f"""
         query GetAllianceByName($name: [String]) {{
             alliances(name: $name, first: 1) {{
@@ -435,13 +476,17 @@ class PnWClient:
     async def get_nation_rest(self, nation_id: int) -> Optional[Nation]:
         """Fetch a nation by its numeric ID using the PnW v1 REST API.
 
+        Uses ``self._rest_url`` as the base when set; falls back to the
+        production REST URL otherwise.
+
         Returns ``None`` if the nation is not found or the API reports failure.
         """
-        url = f"{PNW_REST_URL}?id={nation_id}&key={self._api_key}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                data = await resp.json(content_type=None)
+        base = self._rest_url if self._rest_url is not None else PNW_REST_URL
+        url = f"{base}nation/?id={nation_id}&key={self._api_key}"
+        session = self._get_session()
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
         if not data.get("success"):
             return None
         minutes = int(data.get("minutessinceactive") or 0)
@@ -454,6 +499,36 @@ class PnWClient:
             score=float(data.get("score") or 0.0),
             last_active=f"{minutes} minutes ago" if minutes else "",
             minutes_since_active=minutes,
+        )
+
+    async def _get_alliance_rest(self, alliance_id: int) -> Optional[AllianceInfo]:
+        """Fetch alliance info by numeric ID using the PnW v1 REST API.
+
+        Returns ``None`` if the alliance is not found or the API reports failure.
+        """
+        base = self._rest_url if self._rest_url is not None else PNW_REST_URL
+        url = f"{base}alliance/?allianceid={alliance_id}&key={self._api_key}"
+        session = self._get_session()
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+        if not data.get("success"):
+            return None
+        return AllianceInfo(
+            alliance_id=int(data.get("allianceid") or alliance_id),
+            name=data.get("name", ""),
+            acronym=data.get("acronym", "") or "",
+            score=float(data.get("score") or 0.0),
+            # average_score, total_cities, and avg_cities are not available
+            # in the v1 REST API response.
+            average_score=0.0,
+            color=data.get("color", "") or "",
+            flag=data.get("flagurl", "") or "",
+            discord_link=data.get("discord", "") or "",
+            num_members=int(data.get("members") or 0),
+            num_applicants=int(data.get("applicants") or 0),
+            total_cities=0,
+            avg_cities=0.0,
         )
 
     @staticmethod
