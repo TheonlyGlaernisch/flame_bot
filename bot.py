@@ -841,7 +841,12 @@ def _build_slots_page(
     lines: list[str] = []
     for nation in page_members:
         open_slots = MAX_DEFENSIVE_SLOTS - war_counts.get(nation.nation_id, 0)
-        aa = nation.alliance_name or (f"AA:{nation.alliance_id}" if nation.alliance_id else "None")
+        if nation.alliance_name:
+            aa = nation.alliance_name
+        elif nation.alliance_id:
+            aa = f"AA:{nation.alliance_id}"
+        else:
+            aa = "None"
         lines.append(
             f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) ({aa})"
             f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
@@ -855,7 +860,7 @@ def _build_slots_page(
         color=discord.Color.green(),
     )
     embed.set_footer(
-        text=f"Page {page + 1}/{total_pages} · {total} members · {total_open} open slots"
+        text=f"Page {page + 1}/{total_pages} · {total} members total · {total_open} open slots total"
     )
     return embed
 
