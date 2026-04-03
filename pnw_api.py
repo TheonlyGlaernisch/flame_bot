@@ -57,6 +57,17 @@ class Nation:
     alliance_position: str = ""  # "MEMBER", "OFFICER", "HEIR", "LEADER", …
     alliance_seniority: int = 0  # days in current alliance
 
+    # Extra fields populated from the bulk nations REST endpoint
+    rank: int = 0
+    continent: str = ""
+    war_policy: str = ""
+    color: str = ""
+    offensivewars: int = 0
+    defensivewars: int = 0
+
+    # Turns remaining on beige (0 = not beiged); populated by GraphQL path
+    beige_turns: int = 0
+
 
 @dataclass
 class AllianceInfo:
@@ -74,6 +85,7 @@ class AllianceInfo:
     num_applicants: int
     total_cities: int   # sum of cities across active members
     avg_cities: float
+    rank: int = 0
 
 
 _NATION_FIELDS = """
@@ -122,6 +134,7 @@ _NATION_FIELDS = """
     alliance_id
     alliance_position
     alliance_seniority
+    beige_turns
     alliance {
         name
     }
@@ -165,7 +178,18 @@ _ALLIANCE_MEMBER_FIELDS = """
     num_cities
     alliance_position
     vacation_mode_turns
+    beige_turns
 """
+
+# v1 REST API encodes alliance position as an integer; map to string names.
+_ALLIANCE_POSITION_MAP: dict[int, str] = {
+    0: "NOALLIANCE",
+    1: "MEMBER",
+    2: "OFFICER",
+    3: "HEIR",
+    4: "LEADER",
+    5: "APPLICANT",
+}
 
 
 def _parse_last_active_unix(value: str) -> int:
@@ -260,6 +284,7 @@ class PnWClient:
             alliance_name=alliance.get("name", "") or "",
             alliance_position=n.get("alliance_position", "") or "",
             alliance_seniority=int(n.get("alliance_seniority") or 0),
+            beige_turns=int(n.get("beige_turns") or 0),
         )
 
     @staticmethod
@@ -292,10 +317,62 @@ class PnWClient:
     # Public helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parse_nation_from_nations_list(n: dict[str, Any]) -> Nation:
+        """Parse a nation dict from the bulk ``nations/?key=…`` REST endpoint.
+
+        Field names in this endpoint differ from both the single-nation endpoint
+        and the GraphQL schema (e.g. ``nation`` vs ``nation_name``, ``leader``
+        vs ``leader_name``, integer ``allianceposition`` vs string).
+        """
+        minutes = int(n.get("minutessinceactive") or 0)
+        pos_int = int(n.get("allianceposition") or 0)
+        pos_str = _ALLIANCE_POSITION_MAP.get(pos_int, "NOALLIANCE")
+        alliance_name = n.get("alliance") or ""
+        if alliance_name == "None":
+            alliance_name = ""
+        return Nation(
+            nation_id=int(n.get("nationid") or 0),
+            nation_name=n.get("nation", ""),
+            leader_name=n.get("leader", ""),
+            discord_tag="",
+            num_cities=int(n.get("cities") or 0),
+            score=float(n.get("score") or 0.0),
+            last_active=f"{minutes} minutes ago" if minutes else "",
+            minutes_since_active=minutes,
+            alliance_id=int(n.get("allianceid") or 0),
+            alliance_name=alliance_name,
+            alliance_position=pos_str,
+            rank=int(n.get("rank") or 0),
+            continent=n.get("continent", "") or "",
+            war_policy=n.get("war_policy", "") or "",
+            color=n.get("color", "") or "",
+            offensivewars=int(n.get("offensivewars") or 0),
+            defensivewars=int(n.get("defensivewars") or 0),
+        )
+
+    async def _fetch_nations_rest(self) -> list[dict[str, Any]]:
+        """Fetch all nations from the bulk ``nations/?key=…`` REST endpoint.
+
+        Returns the list of raw nation dicts from the ``nations`` key,
+        or an empty list if the response is malformed.
+        """
+        base = self._rest_url if self._rest_url is not None else PNW_REST_URL
+        url = f"{base}nations/?key={self._api_key}"
+        session = self._get_session()
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+        return data.get("nations") or []
+
     async def get_nation(self, nation_id: int) -> Optional[Nation]:
         """Fetch a nation by its numeric ID. Returns None if not found."""
         if self._rest_url is not None:
-            return await self.get_nation_rest(nation_id)
+            nations = await self._fetch_nations_rest()
+            for n in nations:
+                if int(n.get("nationid") or 0) == nation_id:
+                    return self._parse_nation_from_nations_list(n)
+            return None
         query = f"""
         query GetNation($id: [Int]) {{
             nations(id: $id, first: 1) {{
@@ -312,26 +389,22 @@ class PnWClient:
         return self._parse_nation(nations[0])
 
     async def get_nation_by_name(self, name: str) -> Optional[Nation]:
-        """Search for a nation by name (case-insensitive). Returns the first match or None."""
+        """Search for a nation by name (case-insensitive). Returns the first match or None.
+
+        In REST mode, the bulk nations list is fetched and searched locally by
+        nation name first, then by leader name as a fallback.
+        """
         if self._rest_url is not None:
-            url = f"{self._rest_url}nation/?nation_name={name}&key={self._api_key}"
-            session = self._get_session()
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                data = await resp.json(content_type=None)
-            if not data.get("success"):
-                return None
-            minutes = int(data.get("minutessinceactive") or 0)
-            return Nation(
-                nation_id=int(data.get("nationid") or 0),
-                nation_name=data.get("name", ""),
-                leader_name=data.get("leadername", ""),
-                discord_tag="",
-                num_cities=int(data.get("cities") or 0),
-                score=float(data.get("score") or 0.0),
-                last_active=f"{minutes} minutes ago" if minutes else "",
-                minutes_since_active=minutes,
-            )
+            nations = await self._fetch_nations_rest()
+            name_lower = name.strip().lower()
+            for n in nations:
+                if n.get("nation", "").strip().lower() == name_lower:
+                    return self._parse_nation_from_nations_list(n)
+            # Fallback: search by leader name
+            for n in nations:
+                if n.get("leader", "").strip().lower() == name_lower:
+                    return self._parse_nation_from_nations_list(n)
+            return None
         query = f"""
         query GetNationByName($name: [String]) {{
             nations(nation_name: $name, first: 1) {{
@@ -540,6 +613,7 @@ class PnWClient:
             num_applicants=0,
             total_cities=0,
             avg_cities=0.0,
+            rank=int(a.get("rank") or 0),
         )
 
     async def _get_alliance_rest(self, alliance_id: int) -> Optional[AllianceInfo]:

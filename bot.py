@@ -176,6 +176,25 @@ def _nation_embed(
     embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
     embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
 
+    if nation.rank:
+        embed.add_field(name="Rank", value=f"#{nation.rank:,}", inline=True)
+
+    if nation.continent:
+        embed.add_field(name="Continent", value=nation.continent, inline=True)
+
+    if nation.war_policy:
+        embed.add_field(name="War Policy", value=nation.war_policy, inline=True)
+
+    if nation.color:
+        embed.add_field(name="Color", value=nation.color.title(), inline=True)
+
+    if nation.offensivewars or nation.defensivewars:
+        embed.add_field(
+            name="Wars",
+            value=f"⚔️ {nation.offensivewars} off / 🛡️ {nation.defensivewars} def",
+            inline=True,
+        )
+
     # Projects: count + short abbreviations of built projects
     if nation.projects_built:
         projects_value = f"{nation.num_projects} — {', '.join(nation.projects_built)}"
@@ -261,7 +280,10 @@ def _alliance_embed(info: AllianceInfo) -> discord.Embed:
     embed.add_field(name="Color", value=info.color.title() if info.color else "—", inline=True)
     embed.add_field(name="Members", value=str(info.num_members), inline=True)
     embed.add_field(name="Applicants", value=str(info.num_applicants), inline=True)
-    embed.add_field(name="Total Cities", value=str(info.total_cities), inline=True)
+    if info.rank:
+        embed.add_field(name="Rank", value=f"#{info.rank}", inline=True)
+    if info.total_cities:
+        embed.add_field(name="Total Cities", value=str(info.total_cities), inline=True)
     embed.add_field(name="Avg Cities", value=f"{info.avg_cities:.1f}", inline=True)
 
     if info.discord_link:
@@ -847,11 +869,14 @@ def _build_slots_page(
             aa = f"AA:{nation.alliance_id}"
         else:
             aa = "None"
-        lines.append(
+        line = (
             f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) ({aa})"
             f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
             f" | 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS}"
         )
+        if nation.beige_turns > 0:
+            line += f" | 🟡 {nation.beige_turns}t beige"
+        lines.append(line)
 
     sort_label = "Open Slots" if sort_key == "slots" else "Score"
     embed = discord.Embed(
