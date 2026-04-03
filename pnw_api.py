@@ -9,7 +9,7 @@ import aiohttp
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
 PNW_TEST_GRAPHQL_URL = "https://test.politicsandwar.com/graphql"
-PNW_REST_URL = "https://politicsandwar.com/api/nation/"
+PNW_REST_URL = "https://politicsandwar.com/api/"
 PNW_TEST_REST_URL = "https://test.politicsandwar.com/api/"
 
 # Maximum military units per city (used for capacity percentage calculations)
@@ -481,7 +481,7 @@ class PnWClient:
 
         Returns ``None`` if the nation is not found or the API reports failure.
         """
-        base = self._rest_url if self._rest_url is not None else "https://politicsandwar.com/api/"
+        base = self._rest_url if self._rest_url is not None else PNW_REST_URL
         url = f"{base}nation/?id={nation_id}&key={self._api_key}"
         session = self._get_session()
         async with session.get(url) as resp:
@@ -506,7 +506,7 @@ class PnWClient:
 
         Returns ``None`` if the alliance is not found or the API reports failure.
         """
-        base = self._rest_url if self._rest_url is not None else "https://politicsandwar.com/api/"
+        base = self._rest_url if self._rest_url is not None else PNW_REST_URL
         url = f"{base}alliance/?allianceid={alliance_id}&key={self._api_key}"
         session = self._get_session()
         async with session.get(url) as resp:
@@ -519,6 +519,8 @@ class PnWClient:
             name=data.get("name", ""),
             acronym=data.get("acronym", "") or "",
             score=float(data.get("score") or 0.0),
+            # average_score, total_cities, and avg_cities are not available
+            # in the v1 REST API response.
             average_score=0.0,
             color=data.get("color", "") or "",
             flag=data.get("flagurl", "") or "",
