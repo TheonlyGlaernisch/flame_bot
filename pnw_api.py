@@ -8,7 +8,7 @@ from typing import Any, Optional
 import aiohttp
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
-PNW_TEST_GRAPHQL_URL = "https://test.politicsandwar.com/graphql"
+PNW_TEST_GRAPHQL_URL = "https://test.politicsandwar.com/api/"
 PNW_REST_URL = "https://politicsandwar.com/api/nation/"
 
 # Maximum military units per city (used for capacity percentage calculations)
