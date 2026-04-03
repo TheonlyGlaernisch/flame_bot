@@ -89,3 +89,21 @@ class Database:
             {"$set": {"guild_id": str(guild_id), "gov_roles": roles}},
             upsert=True,
         )
+
+    # Grant channel config helpers -------------------------------------------
+
+    def get_grant_channel(self, guild_id: int) -> int | None:
+        """Return the channel ID configured for grant request posts, or None if unset."""
+        doc = self._guild_config.find_one({"guild_id": str(guild_id)}, {"_id": 0})
+        if doc is None:
+            return None
+        raw = doc.get("grant_channel_id")
+        return int(raw) if raw else None
+
+    def set_grant_channel(self, guild_id: int, channel_id: int | None) -> None:
+        """Set (or clear) the grant request channel for a guild."""
+        self._guild_config.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": {"guild_id": str(guild_id), "grant_channel_id": channel_id}},
+            upsert=True,
+        )

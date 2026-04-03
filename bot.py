@@ -24,6 +24,12 @@ Commands
     Look up a Politics and War alliance by ID or name.
     Returns an embed with score, member count, avg cities, and more.
 
+/test whois <query>
+    Same as /whois but queries the PnW test API.
+
+/test alliance <query>
+    Same as /alliance but queries the PnW test API.
+
 /config slots set <alliance_ids>
     (Admin only) Set the alliance IDs monitored by /slots.
 
@@ -36,8 +42,8 @@ Commands
 /slots
     Show an embed listing all non-vacation-mode members of the configured
     alliances with their score, city count, and open defensive slots.
-    Includes sort buttons to toggle between open-slots and score ordering.
-    The sort buttons edit the original embeds in-place.
+    Includes ◀ / ▶ buttons to page through up to 15 nations at a time and
+    sort buttons to toggle between open-slots and score ordering.
 
 /roles setup [econ] [milcom] [ia] [gov]
     (Admin only) Map existing server roles to government departments:
@@ -52,12 +58,22 @@ Commands
     role, organised by department (Economics, Military Command, Internal
     Affairs, Basic Gov).
 
+/setup grant_channel <channel>
+    (Admin only) Set the channel where /request grant posts are sent.
+
 /send <receiver> [sender] [bank_note] [money] [food] [coal] [oil] [uranium] [iron]
       [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
     Compose a Locutus /transfer resources command for a resource transfer.
     receiver is a Discord ping or nation ID; bank_note defaults to #grant.
     Posts an embed with all details and the pre-formatted command:
     /transfer resources receiver:<id> transfer:{ money:1000,...} bank_note:#grant
+
+/request grant <reason> [money] [food] [coal] [oil] [uranium] [iron]
+               [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
+    Request a grant from the Economics team.
+    Posts an embed in the configured grant channel and pings the econ role.
+    Requires both a grant channel and an econ role to be configured via
+    /setup grant_channel and /roles setup respectively.
 
 """
 from __future__ import annotations
@@ -78,6 +94,7 @@ from pnw_api import (
     MAX_SHIPS_PER_CITY,
     MAX_SOLDIERS_PER_CITY,
     MAX_TANKS_PER_CITY,
+    PNW_TEST_GRAPHQL_URL,
     AllianceInfo,
     Nation,
     PnWClient,
@@ -281,6 +298,7 @@ class FlameBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.db = Database(config.MONGODB_URI)
         self.pnw = PnWClient(config.PNW_API_KEY)
+        self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, graphql_url=PNW_TEST_GRAPHQL_URL)
         self._api_runner: web.AppRunner | None = None
 
     async def setup_hook(self) -> None:
@@ -312,6 +330,7 @@ class FlameBot(discord.Client):
 
     async def close(self) -> None:
         await self.pnw.close()
+        await self.pnw_test.close()
         if self._api_runner is not None:
             await self._api_runner.cleanup()
         await super().close()
@@ -432,18 +451,10 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-@bot.tree.command(
-    name="whois",
-    description="Look up a PnW nation by ID, nation name, or @mention / Discord username.",
-)
-@app_commands.describe(
-    query=(
-        "A nation ID, an @mention, a nation name, or a Discord username."
-    )
-)
-async def whois(interaction: discord.Interaction, query: str) -> None:
-    await interaction.response.defer()
-
+async def _handle_whois(
+    interaction: discord.Interaction, pnw: PnWClient, query: str
+) -> None:
+    """Shared logic for /whois and /test whois."""
     query = query.strip()
 
     # ------------------------------------------------------------------
@@ -464,10 +475,10 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
             nation: Optional[Nation] = None
             if member is not None:
                 try:
-                    nation = await bot.pnw.get_nation_by_discord_tag(member.name)
+                    nation = await pnw.get_nation_by_discord_tag(member.name)
                     # Verify the returned nation's tag actually matches this user
                     # (the API filter may return partial matches).
-                    if nation is not None and not bot.pnw.discord_matches(
+                    if nation is not None and not pnw.discord_matches(
                         nation.discord_tag, member.name
                     ):
                         nation = None
@@ -476,8 +487,8 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
                     # migrated to the new username system.
                     if nation is None and member.discriminator and member.discriminator != "0":
                         legacy_tag = f"{member.name}#{member.discriminator}"
-                        nation = await bot.pnw.get_nation_by_discord_tag(legacy_tag)
-                        if nation is not None and not bot.pnw.discord_matches(
+                        nation = await pnw.get_nation_by_discord_tag(legacy_tag)
+                        if nation is not None and not pnw.discord_matches(
                             nation.discord_tag, legacy_tag
                         ):
                             nation = None
@@ -498,7 +509,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
 
         nation_id = row["nation_id"]
         try:
-            nation = await bot.pnw.get_nation(nation_id)
+            nation = await pnw.get_nation(nation_id)
         except Exception:
             nation = None
 
@@ -526,7 +537,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
             return
 
         try:
-            nation = await bot.pnw.get_nation(nation_id)
+            nation = await pnw.get_nation(nation_id)
         except Exception as exc:
             log.exception("PnW API error while fetching nation %d", nation_id)
             await interaction.followup.send(
@@ -552,7 +563,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
     # 3. Text → try nation name search (PnW API), then Discord username (DB)
     # ------------------------------------------------------------------
     try:
-        nation = await bot.pnw.get_nation_by_name(query)
+        nation = await pnw.get_nation_by_name(query)
     except Exception as exc:
         log.exception("PnW API error while searching nation name '%s'", query)
         nation = None
@@ -574,7 +585,7 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
 
     nation_id = row["nation_id"]
     try:
-        nation = await bot.pnw.get_nation(nation_id)
+        nation = await pnw.get_nation(nation_id)
     except Exception:
         nation = None
 
@@ -589,6 +600,20 @@ async def whois(interaction: discord.Interaction, query: str) -> None:
                 "(nation details unavailable)."
             )
         )
+
+
+@bot.tree.command(
+    name="whois",
+    description="Look up a PnW nation by ID, nation name, or @mention / Discord username.",
+)
+@app_commands.describe(
+    query=(
+        "A nation ID, an @mention, a nation name, or a Discord username."
+    )
+)
+async def whois(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_whois(interaction, bot.pnw, query)
 
 
 # ---------------------------------------------------------------------------
@@ -618,20 +643,16 @@ async def unregister(interaction: discord.Interaction) -> None:
 # ---------------------------------------------------------------------------
 
 
-@bot.tree.command(
-    name="alliance",
-    description="Look up a Politics and War alliance by ID or name.",
-)
-@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
-async def alliance_find(interaction: discord.Interaction, query: str) -> None:
-    await interaction.response.defer()
-
+async def _handle_alliance_find(
+    interaction: discord.Interaction, pnw: PnWClient, query: str
+) -> None:
+    """Shared logic for /alliance and /test alliance."""
     query = query.strip()
     try:
         if query.isdigit():
-            info = await bot.pnw.get_alliance_by_id(int(query))
+            info = await pnw.get_alliance_by_id(int(query))
         else:
-            info = await bot.pnw.get_alliance_by_name(query)
+            info = await pnw.get_alliance_by_name(query)
     except Exception as exc:
         log.exception("PnW API error while fetching alliance '%s'", query)
         await interaction.followup.send(
@@ -646,6 +667,16 @@ async def alliance_find(interaction: discord.Interaction, query: str) -> None:
         return
 
     await interaction.followup.send(embed=_alliance_embed(info))
+
+
+@bot.tree.command(
+    name="alliance",
+    description="Look up a Politics and War alliance by ID or name.",
+)
+@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+async def alliance_find(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_alliance_find(interaction, bot.pnw, query)
 
 
 # ---------------------------------------------------------------------------
@@ -770,21 +801,16 @@ async def config_slots_clear_error(
 # /slots  — helpers + View
 # ---------------------------------------------------------------------------
 
-_EMBED_DESC_SOFT_LIMIT = 4000
+_PAGE_SIZE = 15
 
 
-def _build_slots_embeds(
+def _sort_members(
     members: list[Nation],
     war_counts: dict[int, int],
-    sort_key: str = "slots",
-) -> list[discord.Embed]:
-    """Return a list of Discord embeds for the /slots display.
-
-    *sort_key* is either ``"slots"`` (most open slots first, then by score) or
-    ``"score"`` (highest score first).
-    """
+    sort_key: str,
+) -> list[Nation]:
     if sort_key == "slots":
-        sorted_members = sorted(
+        return sorted(
             members,
             key=lambda n: (
                 MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0),
@@ -792,103 +818,106 @@ def _build_slots_embeds(
             ),
             reverse=True,
         )
-    else:
-        sorted_members = sorted(members, key=lambda n: n.score, reverse=True)
+    return sorted(members, key=lambda n: n.score, reverse=True)
 
-    alliances_map: dict[int, list[Nation]] = {}
-    for nation in sorted_members:
-        alliances_map.setdefault(nation.alliance_id, []).append(nation)
 
-    embeds: list[discord.Embed] = []
+def _build_slots_page(
+    members: list[Nation],
+    war_counts: dict[int, int],
+    page: int = 0,
+    sort_key: str = "slots",
+) -> discord.Embed:
+    """Return a single paginated embed for the /slots display (up to 15 nations)."""
+    sorted_members = _sort_members(members, war_counts, sort_key)
+    total = len(sorted_members)
+    total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
 
-    for alliance_id, nations in alliances_map.items():
-        alliance_name = nations[0].alliance_name or f"Alliance {alliance_id}"
-        total_open = sum(
-            MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0) for n in nations
+    page_members = sorted_members[page * _PAGE_SIZE : (page + 1) * _PAGE_SIZE]
+    total_open = sum(
+        MAX_DEFENSIVE_SLOTS - war_counts.get(n.nation_id, 0) for n in members
+    )
+
+    lines: list[str] = []
+    for nation in page_members:
+        open_slots = MAX_DEFENSIVE_SLOTS - war_counts.get(nation.nation_id, 0)
+        aa = nation.alliance_name or (f"AA:{nation.alliance_id}" if nation.alliance_id else "None")
+        lines.append(
+            f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) ({aa})"
+            f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
+            f" | 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS}"
         )
-        section_lines: list[str] = []
-        for nation in nations:
-            active_def = war_counts.get(nation.nation_id, 0)
-            open_slots = MAX_DEFENSIVE_SLOTS - active_def
-            section_lines.append(
-                f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) "
-                f"— 🏙️ {nation.num_cities} "
-                f"| ⭐ {nation.score:,.0f} "
-                f"| 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS} slots"
-            )
 
-        chunk: list[str] = []
-        chunk_len = 0
-        part = 1
-        footer = f"{len(nations)} members · {total_open} open slots"
-
-        for line in section_lines:
-            needed = len(line) + (1 if chunk else 0)
-            if chunk_len + needed > _EMBED_DESC_SOFT_LIMIT and chunk:
-                title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
-                e = discord.Embed(
-                    title=title,
-                    description="\n".join(chunk),
-                    color=discord.Color.green(),
-                )
-                e.set_footer(text=footer)
-                embeds.append(e)
-                chunk = [line]
-                chunk_len = len(line)
-                part += 1
-            else:
-                chunk.append(line)
-                chunk_len += needed
-
-        if chunk:
-            title = alliance_name if part == 1 else f"{alliance_name} (cont.)"
-            e = discord.Embed(
-                title=title,
-                description="\n".join(chunk),
-                color=discord.Color.green(),
-            )
-            e.set_footer(text=footer)
-            embeds.append(e)
-
-    return embeds
+    sort_label = "Open Slots" if sort_key == "slots" else "Score"
+    embed = discord.Embed(
+        title=f"Defensive Slots — Sorted by {sort_label}",
+        description="\n".join(lines) if lines else "*(no members)*",
+        color=discord.Color.green(),
+    )
+    embed.set_footer(
+        text=f"Page {page + 1}/{total_pages} · {total} members · {total_open} open slots"
+    )
+    return embed
 
 
 class SlotsView(discord.ui.View):
-    """Sort-toggle buttons attached to the /slots response."""
+    """Pagination and sort-toggle buttons attached to the /slots response."""
 
     def __init__(
         self,
         members: list[Nation],
         war_counts: dict[int, int],
-        data_messages: list[discord.Message],
+        page: int = 0,
+        sort_key: str = "slots",
     ) -> None:
         super().__init__(timeout=600)
         self.members = members
         self.war_counts = war_counts
-        self.data_messages = data_messages
+        self.page = page
+        self.sort_key = sort_key
+        self._refresh_buttons()
 
-    async def _resort(
-        self, interaction: discord.Interaction, sort_key: str
+    def _total_pages(self) -> int:
+        return max(1, (len(self.members) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+
+    def _refresh_buttons(self) -> None:
+        self.prev_button.disabled = self.page <= 0
+        self.next_button.disabled = self.page >= self._total_pages() - 1
+
+    async def _update(self, interaction: discord.Interaction) -> None:
+        self._refresh_buttons()
+        embed = _build_slots_page(self.members, self.war_counts, self.page, self.sort_key)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
+    async def prev_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await interaction.response.defer()
-        embeds = _build_slots_embeds(self.members, self.war_counts, sort_key)
-        BATCH = 10
-        batches = [embeds[i : i + BATCH] for i in range(0, len(embeds), BATCH)]
-        for i, msg in enumerate(self.data_messages):
-            if i < len(batches):
-                await msg.edit(embeds=batches[i])
+        self.page = max(0, self.page - 1)
+        await self._update(interaction)
 
-    @discord.ui.button(label="Sort: Open Slots", style=discord.ButtonStyle.primary, emoji="🛡️")
+    @discord.ui.button(label="Sort: Open Slots", style=discord.ButtonStyle.primary, emoji="🛡️", row=0)
     async def sort_slots(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._resort(interaction, "slots")
+        self.sort_key = "slots"
+        self.page = 0
+        await self._update(interaction)
 
-    @discord.ui.button(label="Sort: Score", style=discord.ButtonStyle.secondary, emoji="⭐")
+    @discord.ui.button(label="Sort: Score", style=discord.ButtonStyle.secondary, emoji="⭐", row=0)
     async def sort_score(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._resort(interaction, "score")
+        self.sort_key = "score"
+        self.page = 0
+        await self._update(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
+    async def next_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = min(self._total_pages() - 1, self.page + 1)
+        await self._update(interaction)
 
 
 # ---------------------------------------------------------------------------
@@ -937,19 +966,9 @@ async def slots(interaction: discord.Interaction) -> None:
         war_counts = {}
 
     # Default: sorted by open slots descending (most vulnerable first)
-    embeds = _build_slots_embeds(members, war_counts, sort_key="slots")
-
-    # Send data embeds (up to 10 per message) and collect the Message objects
-    # so the sort buttons can edit them in-place.
-    BATCH = 10
-    data_messages: list[discord.Message] = []
-    for i in range(0, len(embeds), BATCH):
-        msg = await interaction.followup.send(embeds=embeds[i : i + BATCH], wait=True)
-        data_messages.append(msg)
-
-    # Send sort-toggle control panel
-    view = SlotsView(members, war_counts, data_messages)
-    await interaction.followup.send("**Sort:**", view=view)
+    embed = _build_slots_page(members, war_counts, page=0, sort_key="slots")
+    view = SlotsView(members, war_counts, page=0, sort_key="slots")
+    await interaction.followup.send(embed=embed, view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -1266,6 +1285,221 @@ async def send_resources(
 
 
 # ---------------------------------------------------------------------------
+# /test  (command group — uses the PnW test API)
+# ---------------------------------------------------------------------------
+
+test_group = app_commands.Group(
+    name="test",
+    description="Test-API equivalents of lookup commands (uses api.test.politicsandwar.com).",
+)
+bot.tree.add_command(test_group)
+
+
+@test_group.command(
+    name="whois",
+    description="Look up a PnW nation via the TEST API by ID, name, or @mention.",
+)
+@app_commands.describe(
+    query="A nation ID, an @mention, a nation name, or a Discord username."
+)
+async def test_whois(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_whois(interaction, bot.pnw_test, query)
+
+
+@test_group.command(
+    name="alliance",
+    description="Look up a PnW alliance via the TEST API by ID or name.",
+)
+@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+async def test_alliance_find(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_alliance_find(interaction, bot.pnw_test, query)
+
+
+# ---------------------------------------------------------------------------
+# /setup  (command group)
+# ---------------------------------------------------------------------------
+
+setup_group = app_commands.Group(
+    name="setup",
+    description="Bot setup commands (admin only).",
+)
+bot.tree.add_command(setup_group)
+
+
+@setup_group.command(
+    name="grant_channel",
+    description="Set the channel where /request grant posts are sent (admin only).",
+)
+@app_commands.describe(channel="The text channel that will receive grant requests.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_grant_channel(
+    interaction: discord.Interaction, channel: discord.TextChannel
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    bot.db.set_grant_channel(guild_id, channel.id)
+    log.info("Guild %d: grant channel set to #%s (%d) by %s", guild_id, channel.name, channel.id, interaction.user)
+    await interaction.followup.send(
+        embed=_success_embed(f"✅ Grant requests will now be posted in {channel.mention}."),
+        ephemeral=True,
+    )
+
+
+@setup_grant_channel.error
+async def setup_grant_channel_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
+# /request  (command group)
+# ---------------------------------------------------------------------------
+
+request_group = app_commands.Group(
+    name="request",
+    description="Submit requests to the government.",
+)
+bot.tree.add_command(request_group)
+
+
+@request_group.command(
+    name="grant",
+    description="Request a grant from the Economics team.",
+)
+@app_commands.describe(
+    reason="Why you need this grant.",
+    money="Amount of money.",
+    food="Amount of food.",
+    coal="Amount of coal.",
+    oil="Amount of oil.",
+    uranium="Amount of uranium.",
+    iron="Amount of iron.",
+    bauxite="Amount of bauxite.",
+    lead="Amount of lead.",
+    gasoline="Amount of gasoline.",
+    munitions="Amount of munitions.",
+    steel="Amount of steel.",
+    aluminum="Amount of aluminum.",
+)
+async def request_grant(
+    interaction: discord.Interaction,
+    reason: str,
+    money: float | None = None,
+    food: float | None = None,
+    coal: float | None = None,
+    oil: float | None = None,
+    uranium: float | None = None,
+    iron: float | None = None,
+    bauxite: float | None = None,
+    lead: float | None = None,
+    gasoline: float | None = None,
+    munitions: float | None = None,
+    steel: float | None = None,
+    aluminum: float | None = None,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    guild_id = interaction.guild_id or 0
+
+    # Check that both the grant channel and the econ role are configured.
+    grant_channel_id = bot.db.get_grant_channel(guild_id)
+    econ_role_id = bot.db.get_gov_roles(guild_id).get("econ")
+
+    missing: list[str] = []
+    if not grant_channel_id:
+        missing.append("grant channel (`/setup grant_channel`)")
+    if not econ_role_id:
+        missing.append("Economics role (`/roles setup`)")
+
+    if missing:
+        await interaction.followup.send(
+            embed=_error_embed(
+                "❌ Cannot submit grant request — the following have not been configured:\n"
+                + "\n".join(f"• {m}" for m in missing)
+            ),
+            ephemeral=True,
+        )
+        return
+
+    # Resolve the grant channel and econ role objects.
+    guild = interaction.guild
+    grant_channel = guild and guild.get_channel(grant_channel_id)
+    if grant_channel is None or not isinstance(grant_channel, discord.TextChannel):
+        await interaction.followup.send(
+            embed=_error_embed("❌ The configured grant channel no longer exists. An admin must re-run `/setup grant_channel`."),
+            ephemeral=True,
+        )
+        return
+
+    raw: list[tuple[str, float | None]] = [
+        ("money", money), ("food", food), ("coal", coal), ("oil", oil),
+        ("uranium", uranium), ("iron", iron), ("bauxite", bauxite),
+        ("lead", lead), ("gasoline", gasoline), ("munitions", munitions),
+        ("steel", steel), ("aluminum", aluminum),
+    ]
+    resources: dict[str, float] = {
+        name: val for name, val in raw if val is not None and val > 0
+    }
+
+    if not resources:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Please provide at least one resource amount greater than zero."),
+            ephemeral=True,
+        )
+        return
+
+    def _fmt_amount(v: float) -> str:
+        return str(int(v)) if v == int(v) else str(v)
+
+    # Determine receiver for the Locutus command: use registered nation ID if available.
+    reg = bot.db.get_by_discord_id(interaction.user.id)
+    receiver = str(reg["nation_id"]) if reg else interaction.user.mention
+
+    transfer_json = "{" + ",".join(
+        f"{k}:{_fmt_amount(v)}" for k, v in resources.items()
+    ) + "}"
+    locutus_cmd = (
+        f"/transfer resources receiver:{receiver} "
+        f"transfer:{transfer_json} bank_note:#grant"
+    )
+
+    embed = discord.Embed(
+        title="📋 Grant Request",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Receiver", value=receiver, inline=True)
+    embed.add_field(name="Reason", value=reason, inline=False)
+
+    res_lines = [
+        f"**{name.title()}:** {_fmt_amount(val)}" for name, val in resources.items()
+    ]
+    embed.add_field(name="Resources", value="\n".join(res_lines), inline=False)
+    embed.add_field(name="Locutus Command", value=f"```{locutus_cmd}```", inline=False)
+
+    econ_mention = f"<@&{econ_role_id}>"
+    await grant_channel.send(content=econ_mention, embed=embed)
+    log.info(
+        "Guild %d: grant request posted by %s to #%s",
+        guild_id, interaction.user, grant_channel.name,
+    )
+
+    await interaction.followup.send(
+        embed=_success_embed(f"✅ Your grant request has been posted in {grant_channel.mention}."),
+        ephemeral=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # /help
 # ---------------------------------------------------------------------------
 
@@ -1274,6 +1508,8 @@ _HELP_COMMANDS = [
     ("/unregister", "Remove your PnW nation registration."),
     ("/whois <query>", "Look up a nation by ID, name, or @mention."),
     ("/alliance <query>", "Look up an alliance by ID or name."),
+    ("/test whois <query>", "Look up a nation via the PnW test API."),
+    ("/test alliance <query>", "Look up an alliance via the PnW test API."),
     ("/gov", "Show members who hold a configured government role."),
     ("/slots", "Show open defensive war slots for monitored alliances."),
     ("/roles setup", "Map server roles to government departments. *(admin)*"),
@@ -1281,7 +1517,9 @@ _HELP_COMMANDS = [
     ("/config slots set <ids>", "Set alliance IDs monitored by /slots. *(admin)*"),
     ("/config slots show", "Show configured /slots alliance IDs."),
     ("/config slots clear", "Clear the /slots alliance configuration. *(admin)*"),
+    ("/setup grant_channel <channel>", "Set the channel for grant requests. *(admin)*"),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
+    ("/request grant <reason> [resources]", "Request a grant from the Economics team."),
     ("/help", "Show this help message."),
 ]
 
