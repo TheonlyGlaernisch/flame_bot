@@ -1295,7 +1295,7 @@ async def send_resources(
 
 test_group = app_commands.Group(
     name="test",
-    description="Test-API equivalents of lookup commands (uses api.test.politicsandwar.com).",
+    description="Test-API equivalents of lookup commands (uses test.politicsandwar.com).",
 )
 bot.tree.add_command(test_group)
 
