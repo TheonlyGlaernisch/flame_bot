@@ -8,6 +8,7 @@ from typing import Any, Optional
 import aiohttp
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
+PNW_TEST_GRAPHQL_URL = "https://api.test.politicsandwar.com/graphql"
 PNW_REST_URL = "https://politicsandwar.com/api/nation/"
 
 # Maximum military units per city (used for capacity percentage calculations)
@@ -180,8 +181,9 @@ def _parse_last_active_unix(value: str) -> int:
 
 
 class PnWClient:
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, graphql_url: str = PNW_GRAPHQL_URL) -> None:
         self._api_key = api_key
+        self._graphql_url = graphql_url
         self._session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
@@ -204,7 +206,7 @@ class PnWClient:
     # ------------------------------------------------------------------
 
     async def _query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        url = f"{PNW_GRAPHQL_URL}?api_key={self._api_key}"
+        url = f"{self._graphql_url}?api_key={self._api_key}"
         session = self._get_session()
         async with session.post(
             url,
