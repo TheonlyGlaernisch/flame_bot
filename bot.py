@@ -135,23 +135,28 @@ def _format_discord_identifier(row: object) -> str:
     return row["discord_username"] or row["discord_id"]
 
 
-def _nation_url(nation_id: int) -> str:
-    return f"https://politicsandwar.com/nation/id={nation_id}/"
+_PNW_BASE_URL = "https://politicsandwar.com"
+_PNW_TEST_BASE_URL = "https://test.politicsandwar.com"
 
 
-def _alliance_url(alliance_id: int) -> str:
-    return f"https://politicsandwar.com/alliance/id={alliance_id}"
+def _nation_url(nation_id: int, base_url: str = _PNW_BASE_URL) -> str:
+    return f"{base_url}/nation/id={nation_id}/"
+
+
+def _alliance_url(alliance_id: int, base_url: str = _PNW_BASE_URL) -> str:
+    return f"{base_url}/alliance/id={alliance_id}"
 
 
 def _nation_embed(
     nation: Nation,
     registered_discord: str | None = None,
     note: str | None = None,
+    base_url: str = _PNW_BASE_URL,
 ) -> discord.Embed:
     """Build a rich Discord embed for a PnW nation."""
     embed = discord.Embed(
         title=nation.nation_name,
-        url=_nation_url(nation.nation_id),
+        url=_nation_url(nation.nation_id, base_url),
         color=discord.Color.blue(),
     )
 
@@ -160,7 +165,7 @@ def _nation_embed(
     # Alliance — hyperlinked name with position + seniority on the second line
     if nation.alliance_id:
         alliance_label = nation.alliance_name or str(nation.alliance_id)
-        alliance_val = f"[{alliance_label}]({_alliance_url(nation.alliance_id)})"
+        alliance_val = f"[{alliance_label}]({_alliance_url(nation.alliance_id, base_url)})"
     else:
         alliance_val = "None"
 
@@ -175,6 +180,25 @@ def _nation_embed(
 
     embed.add_field(name="Score", value=f"{nation.score:,.2f}", inline=True)
     embed.add_field(name="Cities", value=str(nation.num_cities), inline=True)
+
+    if nation.rank:
+        embed.add_field(name="Rank", value=f"#{nation.rank:,}", inline=True)
+
+    if nation.continent:
+        embed.add_field(name="Continent", value=nation.continent, inline=True)
+
+    if nation.war_policy:
+        embed.add_field(name="War Policy", value=nation.war_policy, inline=True)
+
+    if nation.color:
+        embed.add_field(name="Color", value=nation.color.title(), inline=True)
+
+    if nation.offensivewars or nation.defensivewars:
+        embed.add_field(
+            name="Wars",
+            value=f"⚔️ {nation.offensivewars} off / 🛡️ {nation.defensivewars} def",
+            inline=True,
+        )
 
     # Projects: count + short abbreviations of built projects
     if nation.projects_built:
@@ -244,12 +268,12 @@ def _nation_embed(
     return embed
 
 
-def _alliance_embed(info: AllianceInfo) -> discord.Embed:
+def _alliance_embed(info: AllianceInfo, base_url: str = _PNW_BASE_URL) -> discord.Embed:
     """Build a rich Discord embed for a PnW alliance."""
     title = f"{info.name} ({info.acronym})" if info.acronym else info.name
     embed = discord.Embed(
         title=title,
-        url=_alliance_url(info.alliance_id),
+        url=_alliance_url(info.alliance_id, base_url),
         color=discord.Color.gold(),
     )
 
@@ -261,7 +285,10 @@ def _alliance_embed(info: AllianceInfo) -> discord.Embed:
     embed.add_field(name="Color", value=info.color.title() if info.color else "—", inline=True)
     embed.add_field(name="Members", value=str(info.num_members), inline=True)
     embed.add_field(name="Applicants", value=str(info.num_applicants), inline=True)
-    embed.add_field(name="Total Cities", value=str(info.total_cities), inline=True)
+    if info.rank:
+        embed.add_field(name="Rank", value=f"#{info.rank}", inline=True)
+    if info.total_cities:
+        embed.add_field(name="Total Cities", value=str(info.total_cities), inline=True)
     embed.add_field(name="Avg Cities", value=f"{info.avg_cities:.1f}", inline=True)
 
     if info.discord_link:
@@ -452,7 +479,8 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
 
 
 async def _handle_whois(
-    interaction: discord.Interaction, pnw: PnWClient, query: str
+    interaction: discord.Interaction, pnw: PnWClient, query: str,
+    base_url: str = _PNW_BASE_URL,
 ) -> None:
     """Shared logic for /whois and /test whois."""
     query = query.strip()
@@ -499,6 +527,7 @@ async def _handle_whois(
                     nation,
                     registered_discord=f"<@{target_id}>",
                     note="ℹ️ Found via PnW discord field (not locally registered).",
+                    base_url=base_url,
                 )
                 await interaction.followup.send(embed=embed)
             else:
@@ -514,7 +543,7 @@ async def _handle_whois(
             nation = None
 
         if nation:
-            embed = _nation_embed(nation, registered_discord=f"<@{target_id}>")
+            embed = _nation_embed(nation, registered_discord=f"<@{target_id}>", base_url=base_url)
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send(
@@ -555,7 +584,7 @@ async def _handle_whois(
         row = bot.db.get_by_nation_id(nation_id)
         discord_user = f"`{_format_discord_identifier(row)}`" if row else None
 
-        embed = _nation_embed(nation, registered_discord=discord_user)
+        embed = _nation_embed(nation, registered_discord=discord_user, base_url=base_url)
         await interaction.followup.send(embed=embed)
         return
 
@@ -571,7 +600,7 @@ async def _handle_whois(
     if nation:
         row = bot.db.get_by_nation_id(nation.nation_id)
         discord_user = f"`{_format_discord_identifier(row)}`" if row else None
-        embed = _nation_embed(nation, registered_discord=discord_user)
+        embed = _nation_embed(nation, registered_discord=discord_user, base_url=base_url)
         await interaction.followup.send(embed=embed)
         return
 
@@ -591,7 +620,7 @@ async def _handle_whois(
 
     stored_name = _format_discord_identifier(row)
     if nation:
-        embed = _nation_embed(nation, registered_discord=f"`{stored_name}`")
+        embed = _nation_embed(nation, registered_discord=f"`{stored_name}`", base_url=base_url)
         await interaction.followup.send(embed=embed)
     else:
         await interaction.followup.send(
@@ -644,7 +673,8 @@ async def unregister(interaction: discord.Interaction) -> None:
 
 
 async def _handle_alliance_find(
-    interaction: discord.Interaction, pnw: PnWClient, query: str
+    interaction: discord.Interaction, pnw: PnWClient, query: str,
+    base_url: str = _PNW_BASE_URL,
 ) -> None:
     """Shared logic for /alliance and /test alliance."""
     query = query.strip()
@@ -666,7 +696,7 @@ async def _handle_alliance_find(
         )
         return
 
-    await interaction.followup.send(embed=_alliance_embed(info))
+    await interaction.followup.send(embed=_alliance_embed(info, base_url=base_url))
 
 
 @bot.tree.command(
@@ -847,11 +877,14 @@ def _build_slots_page(
             aa = f"AA:{nation.alliance_id}"
         else:
             aa = "None"
-        lines.append(
+        line = (
             f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) ({aa})"
             f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
             f" | 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS}"
         )
+        if nation.beige_turns > 0:
+            line += f" | 🟡 {nation.beige_turns} beige turns"
+        lines.append(line)
 
     sort_label = "Open Slots" if sort_key == "slots" else "Score"
     embed = discord.Embed(
@@ -1309,7 +1342,7 @@ bot.tree.add_command(test_group)
 )
 async def test_whois(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
-    await _handle_whois(interaction, bot.pnw_test, query)
+    await _handle_whois(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
 
 
 @test_group.command(
@@ -1319,7 +1352,7 @@ async def test_whois(interaction: discord.Interaction, query: str) -> None:
 @app_commands.describe(query="Alliance ID (numeric) or alliance name.")
 async def test_alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
-    await _handle_alliance_find(interaction, bot.pnw_test, query)
+    await _handle_alliance_find(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
 
 
 # ---------------------------------------------------------------------------
