@@ -94,7 +94,7 @@ from pnw_api import (
     MAX_SHIPS_PER_CITY,
     MAX_SOLDIERS_PER_CITY,
     MAX_TANKS_PER_CITY,
-    PNW_TEST_GRAPHQL_URL,
+    PNW_TEST_REST_URL,
     AllianceInfo,
     Nation,
     PnWClient,
@@ -298,7 +298,7 @@ class FlameBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.db = Database(config.MONGODB_URI)
         self.pnw = PnWClient(config.PNW_API_KEY)
-        self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, graphql_url=PNW_TEST_GRAPHQL_URL)
+        self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, rest_url=PNW_TEST_REST_URL)
         self._api_runner: web.AppRunner | None = None
 
     async def setup_hook(self) -> None:
