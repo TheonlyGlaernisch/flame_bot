@@ -415,6 +415,163 @@ class TestGetNationRest:
         assert nation.last_active == ""
 
 
+# ---------------------------------------------------------------------------
+# PnWClient REST alliance tests (mocked HTTP) — used by /test commands
+# ---------------------------------------------------------------------------
+
+_REST_ALLIANCES_RESPONSE = {
+    "alliances": [
+        {
+            "id": "100",
+            "name": "Test Alliance",
+            "acronym": "TA",
+            "color": "green",
+            "score": 50000.0,
+            "avgscore": 1000.0,
+            "members": 42,
+            "flagurl": "https://example.com/flag.png",
+            "forumurl": "",
+            "ircchan": "",
+        },
+        {
+            "id": "200",
+            "name": "Another Alliance",
+            "acronym": "AA",
+            "color": "blue",
+            "score": 20000.0,
+            "avgscore": 500.0,
+            "members": 10,
+            "flagurl": "",
+            "forumurl": "",
+            "ircchan": "",
+        },
+    ]
+}
+
+
+def _make_mock_get_alliances(data: dict) -> MagicMock:
+    mock_resp = AsyncMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = AsyncMock(return_value=data)
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(return_value=mock_resp)
+    return mock_session
+
+
+class TestGetAllianceRestById:
+    @pytest.mark.asyncio
+    async def test_returns_alliance_matching_id(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances(_REST_ALLIANCES_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_id(100)
+
+        assert info is not None
+        assert info.alliance_id == 100
+        assert info.name == "Test Alliance"
+        assert info.acronym == "TA"
+        assert info.score == 50000.0
+        assert info.average_score == 1000.0
+        assert info.color == "green"
+        assert info.flag == "https://example.com/flag.png"
+        assert info.num_members == 42
+
+    @pytest.mark.asyncio
+    async def test_returns_second_alliance_by_id(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances(_REST_ALLIANCES_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_id(200)
+
+        assert info is not None
+        assert info.alliance_id == 200
+        assert info.name == "Another Alliance"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_id_not_found(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances(_REST_ALLIANCES_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_id(9999)
+
+        assert info is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_alliances_list_empty(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances({"alliances": []})
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_id(100)
+
+        assert info is None
+
+
+class TestGetAllianceRestByName:
+    @pytest.mark.asyncio
+    async def test_returns_alliance_matching_name(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances(_REST_ALLIANCES_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_name("Test Alliance")
+
+        assert info is not None
+        assert info.name == "Test Alliance"
+        assert info.alliance_id == 100
+
+    @pytest.mark.asyncio
+    async def test_name_match_is_case_insensitive(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances(_REST_ALLIANCES_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_name("test alliance")
+
+        assert info is not None
+        assert info.alliance_id == 100
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_name_not_found(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances(_REST_ALLIANCES_RESPONSE)
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_name("Nobody")
+
+        assert info is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_alliances_list_empty(self):
+        import aiohttp
+
+        client = PnWClient(api_key="dummy", rest_url="https://test.example.com/api/")
+        mock_session = _make_mock_get_alliances({"alliances": []})
+
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
+            info = await client.get_alliance_by_name("Test Alliance")
+
+        assert info is None
+
 
 # ---------------------------------------------------------------------------
 # Database tests

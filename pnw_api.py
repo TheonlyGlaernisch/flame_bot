@@ -444,9 +444,15 @@ class PnWClient:
     async def get_alliance_by_name(self, name: str) -> Optional[AllianceInfo]:
         """Search for an alliance by name (case-insensitive). Returns the first match or None.
 
-        Not supported by the v1 REST API; always returns None in REST mode.
+        In REST mode the full alliances list is fetched from ``alliances/?key=…``
+        and filtered locally.  In GraphQL mode the query is delegated to the API.
         """
         if self._rest_url is not None:
+            alliances = await self._fetch_alliances_rest()
+            name_lower = name.strip().lower()
+            for a in alliances:
+                if a.get("name", "").strip().lower() == name_lower:
+                    return self._parse_alliance_rest(a)
             return None
         query = f"""
         query GetAllianceByName($name: [String]) {{
@@ -482,7 +488,7 @@ class PnWClient:
         Returns ``None`` if the nation is not found or the API reports failure.
         """
         base = self._rest_url if self._rest_url is not None else PNW_REST_URL
-        url = f"{base}nation/?id={nation_id}&key={self._api_key}"
+        url = f"{base}nation/id={nation_id}/&key={self._api_key}"
         session = self._get_session()
         async with session.get(url) as resp:
             resp.raise_for_status()
@@ -501,35 +507,53 @@ class PnWClient:
             minutes_since_active=minutes,
         )
 
-    async def _get_alliance_rest(self, alliance_id: int) -> Optional[AllianceInfo]:
-        """Fetch alliance info by numeric ID using the PnW v1 REST API.
+    async def _fetch_alliances_rest(self) -> list[dict[str, Any]]:
+        """Fetch all alliances from the PnW v1 REST API.
 
-        Returns ``None`` if the alliance is not found or the API reports failure.
+        Returns the list of raw alliance dicts from the ``alliances`` key,
+        or an empty list if the response is malformed.
         """
         base = self._rest_url if self._rest_url is not None else PNW_REST_URL
-        url = f"{base}alliance/?allianceid={alliance_id}&key={self._api_key}"
+        url = f"{base}alliances/?key={self._api_key}"
         session = self._get_session()
         async with session.get(url) as resp:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
-        if not data.get("success"):
-            return None
+        return data.get("alliances") or []
+
+    @staticmethod
+    def _parse_alliance_rest(a: dict[str, Any]) -> AllianceInfo:
+        """Parse a single alliance dict from the PnW v1 REST ``/alliances/`` endpoint."""
         return AllianceInfo(
-            alliance_id=int(data.get("allianceid") or alliance_id),
-            name=data.get("name", ""),
-            acronym=data.get("acronym", "") or "",
-            score=float(data.get("score") or 0.0),
-            # average_score, total_cities, and avg_cities are not available
-            # in the v1 REST API response.
-            average_score=0.0,
-            color=data.get("color", "") or "",
-            flag=data.get("flagurl", "") or "",
-            discord_link=data.get("discord", "") or "",
-            num_members=int(data.get("members") or 0),
-            num_applicants=int(data.get("applicants") or 0),
+            alliance_id=int(a.get("id") or 0),
+            name=a.get("name", ""),
+            acronym=a.get("acronym", "") or "",
+            score=float(a.get("score") or 0.0),
+            # avgscore is the v1 REST field name; total_cities not available
+            average_score=float(a.get("avgscore") or 0.0),
+            color=a.get("color", "") or "",
+            flag=a.get("flagurl", "") or "",
+            # discord / ircchan not reliably present in v1 REST
+            discord_link="",
+            num_members=int(a.get("members") or 0),
+            # applicants not included in the v1 REST alliances list
+            num_applicants=0,
             total_cities=0,
             avg_cities=0.0,
         )
+
+    async def _get_alliance_rest(self, alliance_id: int) -> Optional[AllianceInfo]:
+        """Fetch alliance info by numeric ID using the PnW v1 REST API.
+
+        Fetches the full alliances list from ``alliances/?key=…`` and
+        returns the first entry whose ``id`` matches *alliance_id*, or
+        ``None`` if not found.
+        """
+        alliances = await self._fetch_alliances_rest()
+        for a in alliances:
+            if int(a.get("id") or 0) == alliance_id:
+                return self._parse_alliance_rest(a)
+        return None
 
     @staticmethod
     def discord_matches(discord_tag: str, username: str) -> bool:
