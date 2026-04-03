@@ -875,7 +875,7 @@ def _build_slots_page(
             f" | 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS}"
         )
         if nation.beige_turns > 0:
-            line += f" | 🟡 {nation.beige_turns}t beige"
+            line += f" | 🟡 {nation.beige_turns} beige turns"
         lines.append(line)
 
     sort_label = "Open Slots" if sort_key == "slots" else "Score"
