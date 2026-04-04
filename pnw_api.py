@@ -845,36 +845,6 @@ class PnWClient:
             counts[def_id] = counts.get(def_id, 0) + 1
         return counts
 
-    async def get_nations_avg_infra(self, nation_ids: list[int]) -> dict[int, float]:
-        """Return a mapping of nation_id -> average infrastructure per city.
-
-        Queries the cities sub-object for each nation.  Nations not present in
-        the result have no city data and are omitted from the dict.
-        """
-        if not nation_ids:
-            return {}
-        query = """
-        query GetNationsAvgInfra($nation_id: [Int]) {
-            nations(id: $nation_id, first: 500) {
-                data {
-                    id
-                    cities {
-                        infrastructure
-                    }
-                }
-            }
-        }
-        """
-        data = await self._query(query, {"nation_id": nation_ids})
-        nations = data.get("data", {}).get("nations", {}).get("data", [])
-        result: dict[int, float] = {}
-        for n in nations:
-            cities = n.get("cities") or []
-            if cities:
-                total = sum(float(c.get("infrastructure") or 0) for c in cities)
-                result[int(n["id"])] = total / len(cities)
-        return result
-
     async def get_alliance_by_id(self, alliance_id: int) -> Optional[AllianceInfo]:
         """Fetch alliance statistics by numeric ID. Returns None if not found."""
         if self._rest_url is not None:

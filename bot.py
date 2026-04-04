@@ -2499,6 +2499,33 @@ _MISSILE_TOP_N = 20
 _PNW_MAX_DEF_WARS = 3
 
 
+def _estimate_avg_infra(nation: pnw_api.Nation) -> float:
+    """Estimate average infrastructure per city from the nation's score.
+
+    Uses the same formula as /whois:
+        score = (cities-1)*100 + 10 + projects*20 + total_infra/40 + military_score
+        => avg_infra = (score - (cities-1)*100 - 10 - projects*20 - military_score) * 40 / cities
+    """
+    if nation.num_cities <= 0:
+        return 0.0
+    military_score = (
+        nation.soldiers * 0.0004
+        + nation.tanks * 0.025
+        + nation.aircraft * 0.3
+        + nation.ships * 1.0
+        + nation.missiles * 5.0
+        + nation.nukes * 15.0
+    )
+    infra_score = (
+        nation.score
+        - (nation.num_cities - 1) * 100
+        - 10
+        - nation.num_projects * 20
+        - military_score
+    )
+    return max(0.0, infra_score * 40 / nation.num_cities)
+
+
 def _build_missile_targets_embed(
     nations: list[tuple[pnw_api.Nation, int, float]],
     alliance_names: list[str],
@@ -2599,13 +2626,11 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
         )
         return
 
-    # Fetch avg infra per city for the open-slot nations
-    open_ids = [n.nation_id for n, _ in open_slot_nations]
-    try:
-        avg_infra_map = await bot.pnw.get_nations_avg_infra(open_ids)
-    except Exception:
-        log.exception("PnW API error while fetching avg infra for missile targets")
-        avg_infra_map = {}
+    # Fetch avg infra per city for the open-slot nations using the score formula
+    # (same as /whois — no extra API call needed)
+    avg_infra_map: dict[int, float] = {
+        n.nation_id: _estimate_avg_infra(n) for n, _ in open_slot_nations
+    }
 
     # Sort by avg infra descending, fall back to city count for ties
     open_slot_nations.sort(
