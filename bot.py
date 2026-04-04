@@ -252,10 +252,10 @@ def _nation_embed(
     if nation.color:
         embed.add_field(name="Color", value=nation.color.title(), inline=True)
 
-    if nation.offensivewars or nation.defensivewars:
+    if nation.offensive_wars or nation.defensive_wars:
         embed.add_field(
             name="Wars",
-            value=f"⚔️ {nation.offensivewars} off / 🛡️ {nation.defensivewars} def",
+            value=f"⚔️ {nation.offensive_wars} off / 🛡️ {nation.defensive_wars} def",
             inline=True,
         )
 

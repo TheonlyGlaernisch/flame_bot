@@ -111,8 +111,8 @@ class Nation:
     continent: str = ""
     war_policy: str = ""
     color: str = ""
-    offensivewars: int = 0
-    defensivewars: int = 0
+    offensive_wars: int = 0
+    defensive_wars: int = 0
 
     # Turns remaining on beige (0 = not beiged); populated by GraphQL path
     beige_turns: int = 0
@@ -714,8 +714,8 @@ class PnWClient:
         nation.population = int(n.get("population") or 0)
         nation.domestic_policy = n.get("domestic_policy", "") or ""
         nation.war_policy = n.get("war_policy", "") or ""
-        nation.offensivewars = int(n.get("offensive_wars") or 0)
-        nation.defensivewars = int(n.get("defensive_wars") or 0)
+        nation.offensive_wars = int(n.get("offensive_wars") or 0)
+        nation.defensive_wars = int(n.get("defensive_wars") or 0)
         cities = [self._parse_city(c) for c in (n.get("cities") or [])]
         return nation, cities
 
