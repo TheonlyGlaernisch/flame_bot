@@ -1861,6 +1861,44 @@ async def admin_api_key_set_error(
 
 
 # ---------------------------------------------------------------------------
+# /admin clear_guild_commands
+# ---------------------------------------------------------------------------
+
+
+@admin_group.command(
+    name="clear_guild_commands",
+    description="Clear all guild-scoped slash commands to remove duplicates (admin only).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_clear_guild_commands(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("❌ This command must be used inside a server.", ephemeral=True)
+        return
+    bot.tree.clear_commands(guild=guild)
+    await bot.tree.sync(guild=guild)
+    log.info("Guild %d: guild-scoped slash commands cleared by %s", guild.id, interaction.user)
+    await interaction.followup.send(
+        "✅ Guild-specific slash commands cleared. Duplicates should be gone within a few seconds.",
+        ephemeral=True,
+    )
+
+
+@admin_clear_guild_commands.error
+async def admin_clear_guild_commands_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
 # /color check
 # ---------------------------------------------------------------------------
 
@@ -1980,6 +2018,7 @@ _HELP_COMMANDS = [
     ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
+    ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
