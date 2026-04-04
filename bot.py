@@ -2099,7 +2099,7 @@ def _build_leaderboard_page(
             munitions=s["mun_looted"],
             aluminum=s["alum_looted"],
             steel=s["steel_looted"],
-        )
+        ) + res_dmg
         city_str = f" · {cities}🏙️" if cities > 0 else ""
         stats = "  ".join([
             _lb_stat(infra,   "🏗️", cities, sort_mode in ("infra", "dmg_city")),
@@ -2115,7 +2115,7 @@ def _build_leaderboard_page(
     if total_pages > 1:
         footer_parts.append(f"Page {page + 1}/{total_pages}")
     footer_parts.append(f"{len(sorted_nations)} members")
-    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot  (/c = per city)")
+    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot (money + res dmg @ mkt)  (/c = per city)")
 
     embed = discord.Embed(
         title=f"⚔️ War Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
@@ -2160,7 +2160,7 @@ class LeaderboardView(discord.ui.View):
             munitions=s["mun_looted"],
             aluminum=s["alum_looted"],
             steel=s["steel_looted"],
-        )
+        ) + self._res_dmg(s)
 
     def _res_dmg(self, s: dict) -> float:
         return self._prices.resource_value(
@@ -2324,9 +2324,174 @@ async def damage_command(
     await interaction.followup.send(embed=embed, view=view)
 
 
+
 # ---------------------------------------------------------------------------
-# /help
+# /spy target find
 # ---------------------------------------------------------------------------
+
+_SPY_TARGETS_PAGE_SIZE = 15
+
+
+def _build_spy_targets_page(
+    members: list[Nation],
+    title: str,
+    multi_alliance: bool,
+    page: int,
+) -> discord.Embed:
+    total = len(members)
+    total_pages = max(1, (total + _SPY_TARGETS_PAGE_SIZE - 1) // _SPY_TARGETS_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * _SPY_TARGETS_PAGE_SIZE
+    page_members = members[start : start + _SPY_TARGETS_PAGE_SIZE]
+
+    lines: list[str] = []
+    for i, nation in enumerate(page_members, start=start + 1):
+        beige = " 🔵" if nation.beige_turns > 0 else ""
+        alliance_tag = (
+            f" [{nation.alliance_name}]" if multi_alliance and nation.alliance_name else ""
+        )
+        line = (
+            f"`{i:>3}.` [{nation.nation_name}]({_nation_url(nation.nation_id)})"
+            f"{beige}{alliance_tag}"
+            f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
+        )
+        lines.append(line)
+
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(lines) if lines else "*(no targets found)*",
+        color=discord.Color.dark_grey(),
+    )
+    footer = f"Page {page + 1}/{total_pages} · {total} nations · sorted by cities desc · 🔵 = beiged"
+    embed.set_footer(text=footer)
+    return embed
+
+
+class SpyTargetView(discord.ui.View):
+    """◀/▶ pagination buttons for /spy target find."""
+
+    def __init__(
+        self,
+        members: list[Nation],
+        title: str,
+        multi_alliance: bool,
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=600)
+        self._members = members
+        self._title = title
+        self._multi_alliance = multi_alliance
+        self.page = page
+        self._refresh_buttons()
+
+    def _total_pages(self) -> int:
+        return max(
+            1, (len(self._members) + _SPY_TARGETS_PAGE_SIZE - 1) // _SPY_TARGETS_PAGE_SIZE
+        )
+
+    def _refresh_buttons(self) -> None:
+        self.prev_button.disabled = self.page <= 0
+        self.next_button.disabled = self.page >= self._total_pages() - 1
+
+    async def _update(self, interaction: discord.Interaction) -> None:
+        self._refresh_buttons()
+        embed = _build_spy_targets_page(
+            self._members, self._title, self._multi_alliance, self.page
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = max(0, self.page - 1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = min(self._total_pages() - 1, self.page + 1)
+        await self._update(interaction)
+
+
+spy_group = app_commands.Group(
+    name="spy",
+    description="Spy-related commands.",
+)
+bot.tree.add_command(spy_group)
+
+spy_target_group = app_commands.Group(
+    name="target",
+    description="Find nations to target with spy operations.",
+)
+spy_group.add_command(spy_target_group)
+
+
+@spy_target_group.command(
+    name="find",
+    description="Find nations in the given alliances sorted by spy capacity (cities).",
+)
+@app_commands.describe(
+    alliances="Comma-separated alliance names or IDs to search (e.g. Rose, Camelot)."
+)
+async def spy_target_find(interaction: discord.Interaction, alliances: str) -> None:
+    await interaction.response.defer()
+
+    names = [n.strip() for n in alliances.split(",") if n.strip()]
+    if not names:
+        await interaction.followup.send(
+            embed=_error_embed("Please provide at least one alliance name or ID."),
+            ephemeral=True,
+        )
+        return
+
+    alliance_ids: list[int] = []
+    alliance_names: list[str] = []
+    not_found: list[str] = []
+
+    for name in names:
+        if name.isdigit():
+            info = await bot.pnw.get_alliance_by_id(int(name))
+        else:
+            info = await bot.pnw.get_alliance_by_name(name)
+        if info is None:
+            not_found.append(name)
+        elif info.alliance_id not in alliance_ids:
+            alliance_ids.append(info.alliance_id)
+            alliance_names.append(info.name)
+
+    if not_found:
+        plural = "s" if len(not_found) > 1 else ""
+        missing = ", ".join(f"**{n}**" for n in not_found)
+        await interaction.followup.send(
+            embed=_error_embed(f"Alliance{plural} not found: {missing}"),
+            ephemeral=True,
+        )
+        return
+
+    members = await bot.pnw.get_alliance_members(alliance_ids)
+    members = [
+        m for m in members
+        if m.alliance_position not in ("APPLICANT", "NOALLIANCE", "")
+    ]
+    members.sort(key=lambda m: m.num_cities, reverse=True)
+
+    if not members:
+        await interaction.followup.send(
+            embed=_info_embed("ℹ️ No active members found in the given alliances."),
+            ephemeral=True,
+        )
+        return
+
+    multi_alliance = len(alliance_ids) > 1
+    title = f"🕵️ Spy Targets — {', '.join(alliance_names)}"
+    embed = _build_spy_targets_page(members, title, multi_alliance, 0)
+    view = SpyTargetView(members, title, multi_alliance)
+    await interaction.followup.send(embed=embed, view=view)
+
+
+
 
 _HELP_COMMANDS = [
     ("/register <nation_id>", "Link your Discord account to a PnW nation."),
@@ -2351,6 +2516,7 @@ _HELP_COMMANDS = [
     ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
     ("/damage leaderboard", "Show loot leaderboard (money + resources at market price from ground/beige victories, past 7 days) with infra damage."),
+    ("/spy target find <alliances>", "Find nations in given alliances (comma-separated names or IDs) sorted by spy capacity (cities)."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
