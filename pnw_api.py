@@ -587,20 +587,25 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Phase 1 – wars query: collects war IDs and per-war resource-usage totals
-        for all qualifying wars.
+        Phase 1 – wars query: collects war IDs and per-war totals for infra
+        damage, AIRVMONEY, GROUND money stolen, and enemy resource usage.
 
-        Phase 2 – warattacks query: iterates every individual attack to build
-        per-attack totals.  ``att_id`` in each WarAttack is the nation that
-        *initiated* that specific exchange (either the war's original attacker or
-        the defender doing a counterattack), so a single loop handles all roles.
+        Phase 2 – warattacks query: iterates GROUND and VICTORY attacks only to
+        build per-attack resource loot totals and VICTORY money_stolen.
+        ``att_id`` in each WarAttack is the nation that *initiated* that specific
+        exchange (either the war's original attacker or the defender doing a
+        counterattack), so a single loop handles all roles.
 
         Attack-type breakdown:
-          • infra_destroyed_value  → infra_value   (all types: AIRVINFRA, NAVAL,
-                                                    GROUND, MISSILE, NUKE, VICTORY)
-          • AIRVMONEY money_stolen → infra_value   (money destroyed/dealt, not looted)
-          • GROUND / VICTORY money_stolen → money_looted
-          • GROUND / VICTORY loot_info    → gas/mun/alum/steel looted (resources only)
+          Phase 1 (war level):
+          • att/def_infra_destroyed_value → infra_value  (all attack types)
+          • att/def_money_destroyed       → infra_value  (AIRVMONEY; money
+                                                          destroyed, not looted)
+          • att/def_money_stolen          → money_looted (GROUND attacks only;
+                                                          does not include VICTORY)
+          Phase 2 (per attack, GROUND + VICTORY only):
+          • VICTORY money_stolen          → money_looted (not in war-level total)
+          • GROUND / VICTORY loot_info    → gas/mun/alum/steel looted
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
@@ -653,6 +658,12 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
+                        att_infra_destroyed_value
+                        def_infra_destroyed_value
+                        att_money_destroyed
+                        def_money_destroyed
+                        att_money_stolen
+                        def_money_stolen
                         att_gas_used
                         att_mun_used
                         att_alum_used
@@ -714,6 +725,9 @@ class PnWClient:
                         entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
+                        entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
+                        entry["infra_value"] += float(war.get("att_money_destroyed") or 0)
+                        entry["money_looted"] += float(war.get("att_money_stolen") or 0)
                         entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
                         entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
@@ -734,8 +748,9 @@ class PnWClient:
                         entry = results.setdefault(def_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        # def_money_looted is money the ATTACKER looted FROM the defender
-                        # (loot the defender lost, not gained), so we do not credit it here.
+                        entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
+                        entry["infra_value"] += float(war.get("def_money_destroyed") or 0)
+                        entry["money_looted"] += float(war.get("def_money_stolen") or 0)
                         # Resources the enemy attacker was forced to spend.
                         entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
@@ -755,21 +770,18 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: collect per-attack infra damage, money, and resource loot.
+        # Phase 2: per-attack resource loot and VICTORY money.
+        #
+        # Infra damage, AIRVMONEY, and GROUND money_stolen are all covered by
+        # war-level fields fetched in Phase 1.  Phase 2 only needs to handle:
+        #   • VICTORY money_stolen  — not included in war-level money_stolen
+        #   • GROUND / VICTORY loot_info — per-city resource loot, no war-level field
         #
         # att_id in each WarAttack is the nation *initiating* that specific
         # attack (either the war's original attacker or the defender doing a
-        # counterattack), so crediting att_id covers ground, air (AIRVINFRA),
-        # naval, missile, and nuke damage from both sides equally.
-        #
-        # AIRVINFRA destroys infrastructure (monetary value via
-        # infra_destroyed_value) — it does not steal money.
-        # AIRVMONEY steals money from the defender's treasury — counted as
-        # damage dealt (added to infra_value), not as loot.
-        # GROUND and VICTORY attacks loot resources (loot_info) and money
-        # (money_stolen) — counted as loot.
+        # counterattack), so crediting att_id covers both roles.
         # ------------------------------------------------------------------
-        _AIRVMONEY = "AIRVMONEY"
+        _VICTORY = "VICTORY"
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
         _BATCH = _WARATTACKS_BATCH_SIZE
         for batch_start in range(0, len(war_ids), _BATCH):
@@ -781,11 +793,9 @@ class PnWClient:
                     warattacks(war_id: $war_id, page: $page, first: 100) {
                         data {
                             att_id
-                            def_id
                             type
                             victor
                             loot_info
-                            infra_destroyed_value
                             money_stolen
                         }
                         paginatorInfo {
@@ -809,44 +819,24 @@ class PnWClient:
 
                 for attack in attacks:
                     att_id = int(attack.get("att_id") or 0)
-                    victor = int(attack.get("victor") or 0)
-                    attack_type = str(attack.get("type") or "")
-
-                    # Infra damage: credit the attack initiator (att_id) for
-                    # infra they destroyed — covers AIRVINFRA, NAVAL, GROUND,
-                    # MISSILE, NUKE, and VICTORY (all attack types).
-                    # AIRVINFRA destroys infra (not money); the monetary value
-                    # is already fully reflected in infra_destroyed_value.
-                    infra_val = float(attack.get("infra_destroyed_value") or 0)
-                    if infra_val > 0 and att_id in results:
-                        results[att_id]["infra_value"] += infra_val
-
-                    # AIRVMONEY: money is destroyed/stolen from the defender's
-                    # treasury — counts as damage dealt, not loot.
-                    if attack_type == _AIRVMONEY:
-                        money_stolen = float(attack.get("money_stolen") or 0)
-                        if money_stolen > 0 and att_id in results:
-                            results[att_id]["infra_value"] += money_stolen
+                    if att_id not in results:
                         continue
 
-                    # Resource + money loot: only GROUND and VICTORY carry
-                    # loot_info / money_stolen as actual player loot.
+                    attack_type = str(attack.get("type") or "")
                     if attack_type not in _LOOT_TYPES:
                         continue
 
-                    if not victor:
-                        continue  # no victor recorded
-                    if att_id not in results:
-                        continue  # attacker is not one of our tracked members
-                    if victor != att_id:
+                    victor = int(attack.get("victor") or 0)
+                    if not victor or victor != att_id:
                         continue  # attacker lost this exchange — no loot
 
-                    # Money looted (ground pillage or beige loot).
-                    money_stolen = float(attack.get("money_stolen") or 0)
-                    if money_stolen > 0:
-                        results[att_id]["money_looted"] += money_stolen
+                    # VICTORY money_stolen is not reflected in war-level money_stolen.
+                    if attack_type == _VICTORY:
+                        money_stolen = float(attack.get("money_stolen") or 0)
+                        if money_stolen > 0:
+                            results[att_id]["money_looted"] += money_stolen
 
-                    # Resource loot from loot_info text.
+                    # Resource loot from loot_info text (GROUND and VICTORY).
                     loot_info = attack.get("loot_info") or ""
                     if loot_info:
                         gas, mun, alum, steel = _parse_resource_loot(loot_info)
