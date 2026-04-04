@@ -1,4 +1,5 @@
 """Tests for database.py and pnw_api.py (no Discord or network calls)."""
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import mongomock
@@ -6,7 +7,7 @@ import pytest
 from pymongo.errors import DuplicateKeyError
 
 from database import Database
-from pnw_api import PnWClient
+from pnw_api import PnWClient, _parse_resource_loot
 
 
 # ---------------------------------------------------------------------------
@@ -1179,3 +1180,512 @@ class TestGovRoles:
         roles = db.get_gov_roles(1)
         assert isinstance(roles["econ"], int)
         assert roles["econ"] == 123456789012345678
+
+
+# ---------------------------------------------------------------------------
+# _parse_resource_loot tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseResourceLoot:
+    def test_standard_format_all_resources(self):
+        loot_info = (
+            "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel from the nation."
+        )
+        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        assert gas == 3.0
+        assert mun == 2.0
+        assert alum == 1.0
+        assert steel == 1.0
+
+    def test_comma_formatted_numbers(self):
+        loot_info = "looted 1,234 Gasoline, 5,678 Munitions, 900 Aluminum, 100 Steel."
+        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        assert gas == 1234.0
+        assert mun == 5678.0
+        assert alum == 900.0
+        assert steel == 100.0
+
+    def test_partial_resources_missing_values_default_to_zero(self):
+        loot_info = "The attacking forces looted 5 Steel from the nation."
+        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        assert gas == 0.0
+        assert mun == 0.0
+        assert alum == 0.0
+        assert steel == 5.0
+
+    def test_case_insensitive(self):
+        gas, _, _, _ = _parse_resource_loot("looted 10 GASOLINE")
+        assert gas == 10.0
+        _, mun, _, _ = _parse_resource_loot("looted 7 munitions")
+        assert mun == 7.0
+
+    def test_empty_string_returns_all_zeros(self):
+        gas, mun, alum, steel = _parse_resource_loot("")
+        assert gas == mun == alum == steel == 0.0
+
+    def test_no_match_returns_zeros(self):
+        gas, mun, alum, steel = _parse_resource_loot("The forces attacked but looted nothing.")
+        assert gas == mun == alum == steel == 0.0
+
+    def test_decimal_quantities(self):
+        loot_info = "looted 3.5 Gasoline, 2.25 Munitions."
+        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        assert gas == 3.5
+        assert mun == 2.25
+        assert alum == 0.0
+        assert steel == 0.0
+
+    def test_zero_quantity(self):
+        loot_info = "looted 0 Gasoline, 0 Munitions, 0 Aluminum, 0 Steel."
+        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        assert gas == 0.0
+        assert mun == 0.0
+        assert alum == 0.0
+        assert steel == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_alliance_damage tests
+# ---------------------------------------------------------------------------
+
+_CUTOFF = datetime(2024, 1, 1, tzinfo=timezone.utc)
+_RECENT_DATE = "2024-01-15T00:00:00+00:00"
+_OLD_DATE = "2023-12-01T00:00:00+00:00"
+
+_NO_MORE_PAGES = {"hasMorePages": False}
+_EMPTY_WARATTACKS = {
+    "data": {
+        "warattacks": {
+            "data": [],
+            "paginatorInfo": _NO_MORE_PAGES,
+        }
+    }
+}
+
+
+def _wars_response(wars: list, has_more: bool = False) -> dict:
+    return {
+        "data": {
+            "wars": {
+                "data": wars,
+                "paginatorInfo": {"hasMorePages": has_more},
+            }
+        }
+    }
+
+
+def _warattacks_response(attacks: list, has_more: bool = False) -> dict:
+    return {
+        "data": {
+            "warattacks": {
+                "data": attacks,
+                "paginatorInfo": {"hasMorePages": has_more},
+            }
+        }
+    }
+
+
+def _make_war(
+    war_id: str,
+    att_id: str,
+    def_id: str,
+    att_alliance_id: str,
+    def_alliance_id: str,
+    att_name: str = "Attacker",
+    def_name: str = "Defender",
+    att_cities: int = 10,
+    def_cities: int = 8,
+    date: str = _RECENT_DATE,
+) -> dict:
+    """Build a minimal Phase-1 war dict (no damage totals — those live in Phase 2)."""
+    return {
+        "id": war_id,
+        "att_id": att_id,
+        "def_id": def_id,
+        "att_alliance_id": att_alliance_id,
+        "def_alliance_id": def_alliance_id,
+        "date": date,
+        "attacker": {"nation_name": att_name, "num_cities": att_cities},
+        "defender": {"nation_name": def_name, "num_cities": def_cities},
+    }
+
+
+def _make_attack(
+    att_id: str,
+    attack_type: str = "AIRVINFRA",
+    victor: str | None = None,
+    money_stolen: float = 0.0,
+    loot_info: str = "",
+    att_infra_destroyed_value: float = 0.0,
+    def_gas_used: float = 0.0,
+    def_mun_used: float = 0.0,
+    def_alum_used: float = 0.0,
+    def_steel_used: float = 0.0,
+) -> dict:
+    """Build a per-attack dict matching the Phase-2 warattacks schema."""
+    return {
+        "att_id": att_id,
+        "type": attack_type,
+        "victor": victor if victor is not None else att_id,
+        "money_stolen": money_stolen,
+        "loot_info": loot_info,
+        "att_infra_destroyed_value": att_infra_destroyed_value,
+        "def_gas_used": def_gas_used,
+        "def_mun_used": def_mun_used,
+        "def_alum_used": def_alum_used,
+        "def_steel_used": def_steel_used,
+    }
+
+
+class TestGetAllianceDamage:
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_wars(self):
+        client = PnWClient(api_key="dummy")
+        with patch.object(client, "_query", new=AsyncMock(return_value=_wars_response([]))):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_offensive_war_accumulates_infra_and_money(self):
+        war = _make_war("1", "100", "200", "42", "99", "Attacker", "Defender", 10, 8)
+        # Per-attack data provides infra/money/consumption (Locutus model).
+        attack = _make_attack(
+            "100",
+            attack_type="AIRVINFRA",
+            att_infra_destroyed_value=1_000_000.0,
+            money_stolen=500_000.0,
+            def_gas_used=80.0,
+            def_mun_used=40.0,
+            def_alum_used=8.0,
+            def_steel_used=4.0,
+        )
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(side_effect=[_wars_response([war]), _warattacks_response([attack])]),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        assert 100 in result
+        entry = result[100]
+        assert entry["nation_name"] == "Attacker"
+        assert entry["num_cities"] == 10
+        assert entry["infra_value"] == 1_000_000.0
+        assert entry["money_looted"] == 500_000.0
+        assert entry["def_gas_used"] == 80.0
+        assert entry["def_mun_used"] == 40.0
+        assert entry["def_alum_used"] == 8.0
+        assert entry["def_steel_used"] == 4.0
+        # Enemy not in result
+        assert 200 not in result
+
+    @pytest.mark.asyncio
+    async def test_defensive_war_accumulates_infra_and_enemy_resources(self):
+        # Enemy (200) attacked our member (100).  Our member counterattacks,
+        # so att_id=100 appears in Phase-2 attacks even though 100 is the war's
+        # defender.  This is the core of Locutus's per-attack attribution model.
+        war = _make_war("2", "200", "100", "99", "42", "Enemy", "Defender", 12, 9)
+        counterattack = _make_attack(
+            "100",  # our member counterattacking
+            attack_type="GROUND",
+            att_infra_destroyed_value=800_000.0,
+            money_stolen=200_000.0,
+            def_gas_used=60.0,
+            def_mun_used=30.0,
+            def_alum_used=6.0,
+            def_steel_used=3.0,
+        )
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(side_effect=[_wars_response([war]), _warattacks_response([counterattack])]),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        assert 100 in result
+        entry = result[100]
+        assert entry["nation_name"] == "Defender"
+        assert entry["infra_value"] == 800_000.0
+        assert entry["money_looted"] == 200_000.0
+        # def_*_used = enemy's resource cost defending against our counterattack
+        assert entry["def_gas_used"] == 60.0
+        assert entry["def_mun_used"] == 30.0
+        assert entry["def_alum_used"] == 6.0
+        assert entry["def_steel_used"] == 3.0
+        # Enemy attacker not in result
+        assert 200 not in result
+
+    @pytest.mark.asyncio
+    async def test_ground_attack_resource_loot_phase2(self):
+        war = _make_war("1", "100", "200", "42", "99")
+        ground_attack = {
+            "att_id": "100",
+            "type": "GROUND",
+            "victor": "100",
+            "loot_info": "The attacking forces looted 5 Gasoline, 3 Munitions, 2 Aluminum, 1 Steel from the enemy.",
+            "money_stolen": 0.0,
+            "att_infra_destroyed_value": 0.0,
+            "def_gas_used": 0.0,
+            "def_mun_used": 0.0,
+            "def_alum_used": 0.0,
+            "def_steel_used": 0.0,
+        }
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([ground_attack]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        entry = result[100]
+        assert entry["gas_looted"] == 5.0
+        assert entry["mun_looted"] == 3.0
+        assert entry["alum_looted"] == 2.0
+        assert entry["steel_looted"] == 1.0
+        # GROUND loot does not go into vict_* fields
+        assert entry["vict_gas_looted"] == 0.0
+        assert entry["vict_mun_looted"] == 0.0
+        assert entry["vict_alum_looted"] == 0.0
+        assert entry["vict_steel_looted"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_victory_attack_adds_money_and_resources_to_both_columns(self):
+        war = _make_war("1", "100", "200", "42", "99")
+        victory_attack = {
+            "att_id": "100",
+            "type": "VICTORY",
+            "victor": "100",
+            "loot_info": "The attacking forces looted 10 Gasoline, 5 Munitions, 3 Aluminum, 2 Steel from the enemy.",
+            "money_stolen": 1_000_000.0,
+            "att_infra_destroyed_value": 0.0,
+            "def_gas_used": 0.0,
+            "def_mun_used": 0.0,
+            "def_alum_used": 0.0,
+            "def_steel_used": 0.0,
+        }
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([victory_attack]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        entry = result[100]
+        # VICTORY money_stolen is added to money_looted
+        assert entry["money_looted"] == 1_000_000.0
+        # VICTORY resources appear in both gas_looted and vict_gas_looted
+        assert entry["gas_looted"] == 10.0
+        assert entry["mun_looted"] == 5.0
+        assert entry["alum_looted"] == 3.0
+        assert entry["steel_looted"] == 2.0
+        assert entry["vict_gas_looted"] == 10.0
+        assert entry["vict_mun_looted"] == 5.0
+        assert entry["vict_alum_looted"] == 3.0
+        assert entry["vict_steel_looted"] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_failed_exchange_yields_no_loot(self):
+        war = _make_war("1", "100", "200", "42", "99")
+        # Attacker lost this ground exchange (victor=200, not 100)
+        failed_attack = {
+            "att_id": "100",
+            "type": "GROUND",
+            "victor": "200",
+            "loot_info": "The defending forces repelled the attack.",
+            "money_stolen": 0.0,
+            "att_infra_destroyed_value": 0.0,
+            "def_gas_used": 0.0,
+            "def_mun_used": 0.0,
+            "def_alum_used": 0.0,
+            "def_steel_used": 0.0,
+        }
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([failed_attack]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        entry = result[100]
+        assert entry["gas_looted"] == 0.0
+        assert entry["money_looted"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_wars_older_than_cutoff_are_excluded(self):
+        old_war = _make_war("1", "100", "200", "42", "99", date=_OLD_DATE)
+        client = PnWClient(api_key="dummy")
+        with patch.object(client, "_query", new=AsyncMock(return_value=_wars_response([old_war]))):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_intra_alliance_defensive_war_skipped(self):
+        """Defensive block is skipped for intra-alliance wars to avoid double-counting."""
+        war = _make_war("1", "100", "101", "42", "42", "Attacker", "Defender", 10, 8)
+        # Infra credited to attacker (100) via per-attack data.
+        attack = _make_attack("100", attack_type="AIRVINFRA", att_infra_destroyed_value=500_000.0)
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(side_effect=[_wars_response([war]), _warattacks_response([attack])]),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        # Attacker IS counted (offensive block runs)
+        assert 100 in result
+        assert result[100]["infra_value"] == 500_000.0
+        # Defender is NOT counted (defensive block skipped for intra-alliance)
+        assert 101 not in result
+
+    @pytest.mark.asyncio
+    async def test_war_id_deduplicated_in_offensive_block(self):
+        """The same war_id must appear only once in Phase 2 even if the API returns
+        the same war entry twice (e.g. a pagination edge case)."""
+        war = _make_war("1", "100", "200", "42", "99")
+        ground_attack = {
+            "att_id": "100",
+            "type": "GROUND",
+            "victor": "100",
+            "loot_info": "The attacking forces looted 5 Gasoline from the enemy.",
+            "money_stolen": 0.0,
+            "att_infra_destroyed_value": 0.0,
+            "def_gas_used": 0.0,
+            "def_mun_used": 0.0,
+            "def_alum_used": 0.0,
+            "def_steel_used": 0.0,
+        }
+        # Simulate the same war returned on two pages (API edge case)
+        page1 = _wars_response([war], has_more=True)
+        page2 = _wars_response([war], has_more=False)
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[page1, page2, _warattacks_response([ground_attack])],
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        # Without deduplication the resource loot would be 10 (processed twice).
+        # With deduplication it is 5.
+        assert result[100]["gas_looted"] == 5.0
+
+    @pytest.mark.asyncio
+    async def test_multiple_wars_accumulate_per_nation(self):
+        war1 = _make_war("1", "100", "201", "42", "99", "Our Nation", "Enemy1", 10, 5)
+        war2 = _make_war("2", "100", "202", "42", "99", "Our Nation", "Enemy2", 10, 6)
+        # Both wars are in the same Phase-2 batch; attacks provide all damage data.
+        attack1 = _make_attack(
+            "100", att_infra_destroyed_value=1_000_000.0, money_stolen=200_000.0, def_gas_used=50.0
+        )
+        attack2 = _make_attack(
+            "100", att_infra_destroyed_value=500_000.0, money_stolen=100_000.0, def_gas_used=30.0
+        )
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[_wars_response([war1, war2]), _warattacks_response([attack1, attack2])]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        entry = result[100]
+        assert entry["infra_value"] == 1_500_000.0
+        assert entry["money_looted"] == 300_000.0
+        assert entry["def_gas_used"] == 80.0
+
+    @pytest.mark.asyncio
+    async def test_non_alliance_attacker_skipped_in_phase2(self):
+        """Attacks by nations NOT in the alliance should be ignored in Phase 2."""
+        war = _make_war("1", "100", "200", "42", "99")
+        # Counterattack by the enemy (nation 200), who is NOT in our alliance
+        enemy_attack = {
+            "att_id": "200",
+            "type": "GROUND",
+            "victor": "200",
+            "loot_info": "The attacking forces looted 999 Gasoline from the enemy.",
+            "money_stolen": 999_999.0,
+            "att_infra_destroyed_value": 0.0,
+            "def_gas_used": 0.0,
+            "def_mun_used": 0.0,
+            "def_alum_used": 0.0,
+            "def_steel_used": 0.0,
+        }
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([enemy_attack]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        # Nation 200 is NOT in our alliance, so their loot must not appear
+        assert 200 not in result
+        # Nation 100's stats remain at zero (no winning attacks from our side)
+        assert result[100]["gas_looted"] == 0.0
+        assert result[100]["money_looted"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_per_attack_def_consumption_excludes_enemy_counterattack_gas(self):
+        """Per-attack tracking (Locutus model) only counts enemy gas consumed
+        when defending against OUR attacks, not when the enemy counterattacks us.
+
+        With war-level totals the enemy's counterattack gas would be incorrectly
+        included in our member's 'def_gas_used' stat.
+        """
+        war = _make_war("1", "100", "200", "42", "99")
+        # Our member (100) attacks once; enemy spends 30 gas defending.
+        our_attack = _make_attack("100", attack_type="AIRVINFRA", def_gas_used=30.0)
+        # Enemy (200) counterattacks; our member spends 20 gas defending.
+        # This 20 gas is the ENEMY's consumption when THEY attack, so it should
+        # NOT appear in our member's def_gas_used (enemy 200 not in results).
+        enemy_counter = _make_attack(
+            "200", attack_type="AIRVINFRA", def_gas_used=20.0
+        )
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([our_attack, enemy_counter]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        # Only the 30 gas from our member's attack is counted; the enemy
+        # counterattack gas (20) is excluded because att_id=200 is not in results.
+        assert result[100]["def_gas_used"] == 30.0
+
