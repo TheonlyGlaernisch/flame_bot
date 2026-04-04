@@ -135,6 +135,7 @@ _NATION_FIELDS = """
     alliance_position
     alliance_seniority
     beige_turns
+    color
     alliance {
         name
     }
@@ -285,6 +286,7 @@ class PnWClient:
             alliance_position=n.get("alliance_position", "") or "",
             alliance_seniority=int(n.get("alliance_seniority") or 0),
             beige_turns=int(n.get("beige_turns") or 0),
+            color=n.get("color", "") or "",
         )
 
     @staticmethod
