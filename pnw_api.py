@@ -598,6 +598,10 @@ class PnWClient:
             "mun_looted": float,    # munitions looted on attacker victories
             "alum_looted": float,   # aluminum looted on attacker victories
             "steel_looted": float,  # steel looted on attacker victories
+            "def_gas_used": float,  # gasoline the defender was forced to spend
+            "def_mun_used": float,  # munitions the defender was forced to spend
+            "def_alum_used": float, # aluminum the defender was forced to spend
+            "def_steel_used": float,# steel the defender was forced to spend
         }.
         """
         results: dict[int, dict[str, Any]] = {}
@@ -618,6 +622,10 @@ class PnWClient:
                         date
                         att_infra_destroyed_value
                         att_money_looted
+                        def_gas_used
+                        def_mun_used
+                        def_alum_used
+                        def_steel_used
                         attacker {
                             nation_name
                             num_cities
