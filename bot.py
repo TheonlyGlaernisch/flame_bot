@@ -20,15 +20,21 @@ Commands
     Response is a rich embed including alliance position, seniority, and
     military capacity percentages.
 
-/alliance <query>
+/alliance info <query>
     Look up a Politics and War alliance by ID or name.
     Returns an embed with score, member count, avg cities, and more.
+
+/alliance members <query>
+    List members of a Politics and War alliance (10 per page, ◀/▶ to page).
 
 /test whois <query>
     Same as /whois but queries the PnW test API.
 
-/test alliance <query>
-    Same as /alliance but queries the PnW test API.
+/test alliance info <query>
+    Same as /alliance info but queries the PnW test API.
+
+/test alliance members <query>
+    Same as /alliance members but queries the PnW test API.
 
 /config slots set <alliance_ids>
     (Admin or Milcom only) Set the alliance IDs monitored by /slots.
@@ -192,6 +198,7 @@ def _nation_embed(
         color=discord.Color.blue(),
     )
 
+    embed.add_field(name="ID", value=str(nation.nation_id), inline=True)
     embed.add_field(name="Leader", value=nation.leader_name or "—", inline=True)
 
     # Alliance — hyperlinked name with position + seniority on the second line
@@ -312,6 +319,7 @@ def _alliance_embed(info: AllianceInfo, base_url: str = _PNW_BASE_URL) -> discor
     if info.flag:
         embed.set_thumbnail(url=info.flag)
 
+    embed.add_field(name="ID", value=str(info.alliance_id), inline=True)
     embed.add_field(name="Score", value=f"{info.score:,.2f}", inline=True)
     embed.add_field(name="Avg Score", value=f"{info.average_score:,.2f}", inline=True)
     embed.add_field(name="Color", value=info.color.title() if info.color else "—", inline=True)
@@ -698,15 +706,17 @@ async def unregister(interaction: discord.Interaction) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /alliance
+# /alliance  (command group)
 # ---------------------------------------------------------------------------
+
+_MEMBERS_PAGE_SIZE = 10
 
 
 async def _handle_alliance_find(
     interaction: discord.Interaction, pnw: PnWClient, query: str,
     base_url: str = _PNW_BASE_URL,
 ) -> None:
-    """Shared logic for /alliance and /test alliance."""
+    """Shared logic for /alliance info and /test alliance info."""
     query = query.strip()
     try:
         if query.isdigit():
@@ -729,14 +739,160 @@ async def _handle_alliance_find(
     await interaction.followup.send(embed=_alliance_embed(info, base_url=base_url))
 
 
-@bot.tree.command(
+async def _handle_alliance_members(
+    interaction: discord.Interaction, pnw: PnWClient, query: str,
+    base_url: str = _PNW_BASE_URL,
+) -> None:
+    """Shared logic for /alliance members and /test alliance members."""
+    query = query.strip()
+    try:
+        if query.isdigit():
+            info = await pnw.get_alliance_by_id(int(query))
+        else:
+            info = await pnw.get_alliance_by_name(query)
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance '%s'", query)
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    if info is None:
+        await interaction.followup.send(
+            embed=_info_embed(f"ℹ️ No alliance found for `{query}`.")
+        )
+        return
+
+    try:
+        members = await pnw.get_alliance_members([info.alliance_id])
+    except Exception as exc:
+        log.exception("PnW API error while fetching members for alliance %d", info.alliance_id)
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not fetch alliance members: {exc}")
+        )
+        return
+
+    members.sort(key=lambda n: n.score, reverse=True)
+    embed = _build_alliance_members_page(members, info, 0, base_url)
+    view = AllianceMembersView(members, info, base_url=base_url)
+    await interaction.followup.send(embed=embed, view=view)
+
+
+def _build_alliance_members_page(
+    members: list[Nation],
+    alliance: AllianceInfo,
+    page: int = 0,
+    base_url: str = _PNW_BASE_URL,
+) -> discord.Embed:
+    """Return a single paginated embed listing alliance members (up to 10 nations)."""
+    total = len(members)
+    total_pages = max(1, (total + _MEMBERS_PAGE_SIZE - 1) // _MEMBERS_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    page_members = members[page * _MEMBERS_PAGE_SIZE : (page + 1) * _MEMBERS_PAGE_SIZE]
+
+    _POS_ICON: dict[str, str] = {
+        "LEADER": "👑",
+        "HEIR": "⚔️",
+        "OFFICER": "🌟",
+        "MEMBER": "👤",
+        "APPLICANT": "📝",
+    }
+
+    lines: list[str] = []
+    start = page * _MEMBERS_PAGE_SIZE
+    for i, nation in enumerate(page_members, start=start + 1):
+        icon = _POS_ICON.get(nation.alliance_position, "👤")
+        line = (
+            f"`{i:>3}.` {icon} [{nation.nation_name}]({_nation_url(nation.nation_id, base_url)})"
+            f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
+        )
+        lines.append(line)
+
+    title = (
+        f"{alliance.name} ({alliance.acronym}) — Members"
+        if alliance.acronym
+        else f"{alliance.name} — Members"
+    )
+    embed = discord.Embed(
+        title=title,
+        url=_alliance_url(alliance.alliance_id, base_url),
+        description="\n".join(lines) if lines else "*(no members)*",
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text=f"Page {page + 1}/{total_pages} • {total} members total")
+    return embed
+
+
+class AllianceMembersView(discord.ui.View):
+    """◀/▶ pagination buttons for the /alliance members response."""
+
+    def __init__(
+        self,
+        members: list[Nation],
+        alliance: AllianceInfo,
+        page: int = 0,
+        base_url: str = _PNW_BASE_URL,
+    ) -> None:
+        super().__init__(timeout=600)
+        self.members = members
+        self.alliance = alliance
+        self.page = page
+        self.base_url = base_url
+        self._refresh_buttons()
+
+    def _total_pages(self) -> int:
+        return max(1, (len(self.members) + _MEMBERS_PAGE_SIZE - 1) // _MEMBERS_PAGE_SIZE)
+
+    def _refresh_buttons(self) -> None:
+        self.prev_button.disabled = self.page <= 0
+        self.next_button.disabled = self.page >= self._total_pages() - 1
+
+    async def _update(self, interaction: discord.Interaction) -> None:
+        self._refresh_buttons()
+        embed = _build_alliance_members_page(self.members, self.alliance, self.page, self.base_url)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = max(0, self.page - 1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = min(self._total_pages() - 1, self.page + 1)
+        await self._update(interaction)
+
+
+alliance_group = app_commands.Group(
     name="alliance",
+    description="Politics and War alliance commands.",
+)
+bot.tree.add_command(alliance_group)
+
+
+@alliance_group.command(
+    name="info",
     description="Look up a Politics and War alliance by ID or name.",
 )
 @app_commands.describe(query="Alliance ID (numeric) or alliance name.")
 async def alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_find(interaction, bot.pnw, query)
+
+
+@alliance_group.command(
+    name="members",
+    description="List members of a Politics and War alliance (10 per page).",
+)
+@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+async def alliance_members(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_alliance_members(interaction, bot.pnw, query)
 
 
 # ---------------------------------------------------------------------------
@@ -1362,14 +1518,31 @@ async def test_whois(interaction: discord.Interaction, query: str) -> None:
     await _handle_whois(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
 
 
-@test_group.command(
+test_alliance_group = app_commands.Group(
     name="alliance",
+    description="Test-API equivalents of alliance commands.",
+)
+test_group.add_command(test_alliance_group)
+
+
+@test_alliance_group.command(
+    name="info",
     description="Look up a PnW alliance via the TEST API by ID or name.",
 )
 @app_commands.describe(query="Alliance ID (numeric) or alliance name.")
 async def test_alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_find(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
+
+
+@test_alliance_group.command(
+    name="members",
+    description="List members of a PnW alliance via the TEST API (10 per page).",
+)
+@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+async def test_alliance_members(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_alliance_members(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -1728,9 +1901,11 @@ _HELP_COMMANDS = [
     ("/register <nation_id>", "Link your Discord account to a PnW nation."),
     ("/unregister", "Remove your PnW nation registration."),
     ("/whois <query>", "Look up a nation by ID, name, or @mention."),
-    ("/alliance <query>", "Look up an alliance by ID or name."),
+    ("/alliance info <query>", "Look up an alliance by ID or name."),
+    ("/alliance members <query>", "List members of an alliance (10 per page)."),
     ("/test whois <query>", "Look up a nation via the PnW test API."),
-    ("/test alliance <query>", "Look up an alliance via the PnW test API."),
+    ("/test alliance info <query>", "Look up an alliance via the PnW test API."),
+    ("/test alliance members <query>", "List members of an alliance via the PnW test API."),
     ("/gov", "Show members who hold a configured government role."),
     ("/slots", "Show open defensive war slots for monitored alliances."),
     ("/roles setup", "Map server roles to government departments. *(admin)*"),
