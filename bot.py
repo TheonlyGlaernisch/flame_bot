@@ -2777,8 +2777,9 @@ async def infra_cost_command(
         embed.add_field(name="Discounts", value="None", inline=False)
 
     if discount > 0:
+        total_savings = (base_cost_per_city - discounted_cost_per_city) * cities
         embed.set_footer(
-            text=f"Base cost per city: ${base_cost_per_city:,.0f}  ·  Savings: ${(base_cost_per_city - discounted_cost_per_city) * cities:,.0f}"
+            text=f"Base cost per city: ${base_cost_per_city:,.0f}  ·  Savings: ${total_savings:,.0f}"
         )
     await interaction.followup.send(embed=embed)
 

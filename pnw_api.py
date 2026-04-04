@@ -1162,7 +1162,7 @@ def calculate_infra_cost(buy_from: float, buy_to: float) -> float:
     if buy_to <= buy_from:
         return 0.0
     diff = buy_to - buy_from
-    return 300.0 * diff + 0.075 * (buy_to ** 2 - buy_from ** 2)
+    return 300.0 * diff + 0.075 * (buy_to * buy_to - buy_from * buy_from)
 
 
 # PnW score ↔ war-range constants
