@@ -106,6 +106,7 @@ Commands
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -2289,8 +2290,6 @@ async def damage_command(
     from datetime import datetime, timedelta, timezone
 
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_DAMAGE_LOOKBACK_DAYS)
-
-    import asyncio
 
     damage_task = asyncio.ensure_future(bot.pnw.get_alliance_damage(alliance_id, cutoff))
     prices_task = asyncio.ensure_future(bot.pnw.get_trade_prices())
