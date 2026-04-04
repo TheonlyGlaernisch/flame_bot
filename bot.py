@@ -1905,6 +1905,44 @@ async def admin_clear_guild_commands_error(
 
 
 # ---------------------------------------------------------------------------
+# /admin sync
+# ---------------------------------------------------------------------------
+
+
+@admin_group.command(
+    name="sync",
+    description="Copy global commands to this server for instant propagation (admin only).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_sync(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("❌ This command must be used inside a server.", ephemeral=True)
+        return
+    bot.tree.copy_global_to(guild=guild)
+    await bot.tree.sync(guild=guild)
+    log.info("Guild %d: commands synced to guild by %s", guild.id, interaction.user)
+    await interaction.followup.send(
+        "✅ Commands synced to this server. New commands should appear within seconds.",
+        ephemeral=True,
+    )
+
+
+@admin_sync.error
+async def admin_sync_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
 # /color check
 # ---------------------------------------------------------------------------
 
@@ -2006,6 +2044,87 @@ async def color_check(interaction: discord.Interaction) -> None:
 # ---------------------------------------------------------------------------
 
 _DAMAGE_LOOKBACK_DAYS = 7
+_LEADERBOARD_PAGE_SIZE = 10
+
+# Sort-mode keys and their display labels (button text).
+_LEADERBOARD_SORT_LABELS: dict[str, str] = {
+    "loot":      "💰 Loot",
+    "dmg_city":  "💥 /City",
+    "infra":     "🏗️ Infra",
+    "res_dmg":   "💥 Res Dmg",
+}
+
+
+def _fmt_k(val: float) -> str:
+    """Compact dollar formatter: $1.2M / $500K / $42."""
+    if abs(val) >= 1_000_000:
+        return f"${val / 1_000_000:.1f}M"
+    if abs(val) >= 10_000:
+        return f"${val / 1_000:.0f}K"
+    return f"${val:,.0f}"
+
+
+def _lb_stat(val: float, emoji: str, cities: int, active: bool) -> str:
+    """Format one leaderboard stat cell, bolding it when it is the active sort."""
+    pc = f" ({_fmt_k(val / cities)}/c)" if cities > 0 else ""
+    text = f"{emoji} {_fmt_k(val)}{pc}"
+    return f"**{text}**" if active else text
+
+
+def _build_leaderboard_page(
+    sorted_nations: list[tuple[int, dict]],
+    prices: "TradePrice",
+    page: int,
+    sort_mode: str,
+) -> discord.Embed:
+    start = page * _LEADERBOARD_PAGE_SIZE
+    page_slice = sorted_nations[start : start + _LEADERBOARD_PAGE_SIZE]
+    total_pages = max(
+        1, (len(sorted_nations) + _LEADERBOARD_PAGE_SIZE - 1) // _LEADERBOARD_PAGE_SIZE
+    )
+
+    lines: list[str] = []
+    for i, (nation_id, s) in enumerate(page_slice):
+        rank = start + i + 1
+        cities = s["num_cities"]
+        infra = s["infra_value"]
+        res_dmg = prices.resource_value(
+            gasoline=s["def_gas_used"],
+            munitions=s["def_mun_used"],
+            aluminum=s["def_alum_used"],
+            steel=s["def_steel_used"],
+        )
+        loot = s["money_looted"] + prices.resource_value(
+            gasoline=s["gas_looted"],
+            munitions=s["mun_looted"],
+            aluminum=s["alum_looted"],
+            steel=s["steel_looted"],
+        )
+        city_str = f" · {cities}🏙️" if cities > 0 else ""
+        stats = "  ".join([
+            _lb_stat(infra,   "🏗️", cities, sort_mode in ("infra", "dmg_city")),
+            _lb_stat(res_dmg, "💥", cities, sort_mode in ("res_dmg", "dmg_city")),
+            _lb_stat(loot,    "💰", cities, sort_mode == "loot"),
+        ])
+        lines.append(
+            f"**{rank}.** [{s['nation_name']}]({_nation_url(nation_id)}){city_str}\n{stats}"
+        )
+
+    sort_label = _LEADERBOARD_SORT_LABELS.get(sort_mode, sort_mode)
+    footer_parts: list[str] = [f"Sorted: {sort_label}"]
+    if total_pages > 1:
+        footer_parts.append(f"Page {page + 1}/{total_pages}")
+    footer_parts.append(f"{len(sorted_nations)} members")
+    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot  (/c = per city)")
+
+    embed = discord.Embed(
+        title=f"⚔️ War Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
+        description="\n\n".join(lines) if lines else "*No data.*",
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text="  ·  ".join(footer_parts))
+    return embed
+
 
 damage_group = app_commands.Group(
     name="damage",
@@ -2014,19 +2133,146 @@ damage_group = app_commands.Group(
 bot.tree.add_command(damage_group)
 
 
+class LeaderboardView(discord.ui.View):
+    """Sort and pagination buttons for /damage leaderboard."""
+
+    def __init__(
+        self,
+        all_nations: list[tuple[int, dict]],
+        prices: "TradePrice",
+        sort_mode: str = "loot",
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=600)
+        self._all = all_nations
+        self._prices = prices
+        self.sort_mode = sort_mode
+        self.page = page
+        self._sorted: list[tuple[int, dict]] = []
+        self._resort()
+        self._refresh_buttons()
+
+    # ---- sorting helpers ----
+
+    def _loot(self, s: dict) -> float:
+        return s["money_looted"] + self._prices.resource_value(
+            gasoline=s["gas_looted"],
+            munitions=s["mun_looted"],
+            aluminum=s["alum_looted"],
+            steel=s["steel_looted"],
+        )
+
+    def _res_dmg(self, s: dict) -> float:
+        return self._prices.resource_value(
+            gasoline=s["def_gas_used"],
+            munitions=s["def_mun_used"],
+            aluminum=s["def_alum_used"],
+            steel=s["def_steel_used"],
+        )
+
+    def _sort_key(self, item: tuple[int, dict]) -> float:
+        s = item[1]
+        cities = max(s["num_cities"], 1)
+        if self.sort_mode == "loot":
+            return self._loot(s)
+        if self.sort_mode == "dmg_city":
+            return (s["infra_value"] + self._res_dmg(s)) / cities
+        if self.sort_mode == "infra":
+            return s["infra_value"]
+        if self.sort_mode == "res_dmg":
+            return self._res_dmg(s)
+        return 0.0
+
+    def _resort(self) -> None:
+        self._sorted = sorted(self._all, key=self._sort_key, reverse=True)
+
+    @property
+    def _total_pages(self) -> int:
+        return max(
+            1, (len(self._sorted) + _LEADERBOARD_PAGE_SIZE - 1) // _LEADERBOARD_PAGE_SIZE
+        )
+
+    # ---- button management ----
+
+    def _refresh_buttons(self) -> None:
+        self.clear_items()
+        # Row 0: sort buttons (one per sort mode, active = primary style)
+        for mode, label in _LEADERBOARD_SORT_LABELS.items():
+            btn = discord.ui.Button(
+                label=label,
+                style=(
+                    discord.ButtonStyle.primary
+                    if mode == self.sort_mode
+                    else discord.ButtonStyle.secondary
+                ),
+                custom_id=f"lb_sort_{mode}",
+                row=0,
+            )
+            btn.callback = self._make_sort_cb(mode)
+            self.add_item(btn)
+        # Row 1: prev / next (only when there is more than one page)
+        if self._total_pages > 1:
+            prev_btn = discord.ui.Button(
+                label="◀",
+                style=discord.ButtonStyle.secondary,
+                custom_id="lb_prev",
+                disabled=self.page <= 0,
+                row=1,
+            )
+            prev_btn.callback = self._prev_cb
+            self.add_item(prev_btn)
+
+            next_btn = discord.ui.Button(
+                label="▶",
+                style=discord.ButtonStyle.secondary,
+                custom_id="lb_next",
+                disabled=self.page >= self._total_pages - 1,
+                row=1,
+            )
+            next_btn.callback = self._next_cb
+            self.add_item(next_btn)
+
+    def _make_sort_cb(self, mode: str):
+        async def _cb(interaction: discord.Interaction) -> None:
+            self.sort_mode = mode
+            self.page = 0
+            self._resort()
+            self._refresh_buttons()
+            await interaction.response.edit_message(
+                embed=_build_leaderboard_page(
+                    self._sorted, self._prices, self.page, self.sort_mode
+                ),
+                view=self,
+            )
+        return _cb
+
+    async def _prev_cb(self, interaction: discord.Interaction) -> None:
+        self.page = max(0, self.page - 1)
+        self._refresh_buttons()
+        await interaction.response.edit_message(
+            embed=_build_leaderboard_page(
+                self._sorted, self._prices, self.page, self.sort_mode
+            ),
+            view=self,
+        )
+
+    async def _next_cb(self, interaction: discord.Interaction) -> None:
+        self.page = min(self._total_pages - 1, self.page + 1)
+        self._refresh_buttons()
+        await interaction.response.edit_message(
+            embed=_build_leaderboard_page(
+                self._sorted, self._prices, self.page, self.sort_mode
+            ),
+            view=self,
+        )
+
+
 @damage_group.command(
     name="leaderboard",
-    description="Show damage dealt by each member of the configured alliance in the past week.",
-)
-@app_commands.describe(
-    convert=(
-        "Convert defender resource losses to money using live market prices "
-        "(default: False)."
-    )
+    description="Show loot and damage dealt by each member of the configured alliance in the past week.",
 )
 async def damage_command(
     interaction: discord.Interaction,
-    convert: bool = False,
 ) -> None:
     await interaction.response.defer()
 
@@ -2044,113 +2290,38 @@ async def damage_command(
 
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_DAMAGE_LOOKBACK_DAYS)
 
-    # Run damage fetch (and optionally trade prices) concurrently.
     import asyncio
 
     damage_task = asyncio.ensure_future(bot.pnw.get_alliance_damage(alliance_id, cutoff))
-    prices_task = asyncio.ensure_future(bot.pnw.get_trade_prices()) if convert else None
+    prices_task = asyncio.ensure_future(bot.pnw.get_trade_prices())
 
     try:
         damage_map = await damage_task
     except Exception as exc:
         log.exception("PnW API error while fetching alliance damage")
-        if prices_task is not None:
-            prices_task.cancel()
+        prices_task.cancel()
         await interaction.followup.send(
             embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
         )
         return
 
-    prices: TradePrice | None = None
-    if prices_task is not None:
-        try:
-            prices = await prices_task
-        except Exception:
-            log.exception("PnW API error while fetching trade prices")
-            prices = TradePrice()
+    try:
+        prices = await prices_task
+    except Exception:
+        log.exception("PnW API error while fetching trade prices")
+        prices = TradePrice()
 
     if not damage_map:
         await interaction.followup.send(
             embed=_info_embed(
-                "ℹ️ No offensive wars found for the configured alliance in the past week."
+                "ℹ️ No wars found for the configured alliance in the past week."
             )
         )
         return
 
-    def _total(stats: dict) -> float:
-        base = stats["infra_value"] + stats["money_looted"]
-        if prices is not None:
-            base += prices.resource_value(
-                gasoline=stats["def_gas_used"],
-                munitions=stats["def_mun_used"],
-                aluminum=stats["def_alum_used"],
-                steel=stats["def_steel_used"],
-            )
-        return base
-
-    # Sort nations by total damage descending.
-    sorted_nations = sorted(
-        damage_map.items(),
-        key=lambda item: _total(item[1]),
-        reverse=True,
-    )
-
-    lines: list[str] = []
-    for rank, (nation_id, stats) in enumerate(sorted_nations, start=1):
-        total = _total(stats)
-        name = stats["nation_name"]
-        url = _nation_url(nation_id)
-        cities = stats["num_cities"]
-        per_city = total / cities if cities > 0 else 0.0
-        per_city_str = f"${per_city:,.0f}/city" if cities > 0 else "—"
-        breakdown = f"💥 ${stats['infra_value']:,.0f} + 💰 ${stats['money_looted']:,.0f}"
-        if prices is not None:
-            res_val = prices.resource_value(
-                gasoline=stats["def_gas_used"],
-                munitions=stats["def_mun_used"],
-                aluminum=stats["def_alum_used"],
-                steel=stats["def_steel_used"],
-            )
-            breakdown += f" + 🧪 ${res_val:,.0f}"
-        lines.append(
-            f"{rank}. [{name}]({url}) — **${total:,.0f}** ({per_city_str}) "
-            f"({breakdown})"
-        )
-
-    # Respect Discord's 4096-character description limit.
-    description_lines: list[str] = []
-    char_count = 0
-    truncated_at = 0
-    for i, line in enumerate(lines):
-        if char_count + len(line) + 1 > 4000:
-            truncated_at = len(lines) - i
-            break
-        description_lines.append(line)
-        char_count += len(line) + 1
-
-    description = "\n".join(description_lines)
-    if truncated_at:
-        description += f"\n*… and {truncated_at} more*"
-
-    title = f"⚔️ Damage Dealt — Past {_DAMAGE_LOOKBACK_DAYS} Days"
-    if convert:
-        title += " (market prices)"
-
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=discord.Color.red(),
-    )
-    footer_parts = [
-        f"{len(sorted_nations)} member(s) with offensive wars",
-        "💥 = infra destroyed value",
-        "💰 = money looted",
-        "/city = per attacker city",
-    ]
-    if convert:
-        footer_parts.append("🧪 = defender resource losses at market price")
-    embed.set_footer(text=" · ".join(footer_parts))
-    await interaction.followup.send(embed=embed)
+    view = LeaderboardView(list(damage_map.items()), prices)
+    embed = _build_leaderboard_page(view._sorted, prices, 0, view.sort_mode)
+    await interaction.followup.send(embed=embed, view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -2177,8 +2348,9 @@ _HELP_COMMANDS = [
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
+    ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
-    ("/damage leaderboard [convert]", "Show damage dealt by each member of the configured alliance (past 7 days). Use convert:True to include defender resource losses at market prices."),
+    ("/damage leaderboard", "Show loot leaderboard (money + resources at market price from ground/beige victories, past 7 days) with infra damage."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
