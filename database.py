@@ -107,3 +107,21 @@ class Database:
             {"$set": {"guild_id": str(guild_id), "grant_channel_id": channel_id}},
             upsert=True,
         )
+
+    # Alliance ID config helpers ---------------------------------------------
+
+    def get_alliance_id(self, guild_id: int) -> int | None:
+        """Return the primary alliance ID configured for this guild, or None if unset."""
+        doc = self._guild_config.find_one({"guild_id": str(guild_id)}, {"_id": 0})
+        if doc is None:
+            return None
+        raw = doc.get("alliance_id")
+        return int(raw) if raw else None
+
+    def set_alliance_id(self, guild_id: int, alliance_id: int | None) -> None:
+        """Set (or clear) the primary alliance ID for a guild."""
+        self._guild_config.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": {"guild_id": str(guild_id), "alliance_id": alliance_id}},
+            upsert=True,
+        )

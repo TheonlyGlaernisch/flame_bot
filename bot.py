@@ -31,13 +31,13 @@ Commands
     Same as /alliance but queries the PnW test API.
 
 /config slots set <alliance_ids>
-    (Admin only) Set the alliance IDs monitored by /slots.
+    (Admin or Milcom only) Set the alliance IDs monitored by /slots.
 
 /config slots show
     Show the currently configured /slots alliance IDs.
 
 /config slots clear
-    (Admin only) Clear the /slots alliance configuration.
+    (Admin or Milcom only) Clear the /slots alliance configuration.
 
 /slots
     Show an embed listing all non-vacation-mode members of the configured
@@ -59,7 +59,20 @@ Commands
     Affairs, Basic Gov).
 
 /setup grant_channel <channel>
-    (Admin only) Set the channel where /request grant posts are sent.
+    (Admin, Econ, or IA only) Set the channel where /request grant posts are sent.
+
+/admin alliance set <alliance_id>
+    (Admin only) Set the guild's primary Politics and War alliance ID.
+    Used by /color to determine which alliance to check.
+
+/admin alliance show
+    Show the primary alliance ID configured for this guild.
+
+/color
+    Check whether all active (non-vacation, non-beige) members of the
+    configured primary alliance are on the correct alliance color.
+    Lists any members found on the wrong color together with their
+    current color and the expected color.
 
 /send <receiver> [sender] [bank_note] [money] [food] [coal] [oil] [uranium] [iron]
       [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
@@ -128,6 +141,25 @@ def _get_role(guild: discord.Guild, role_id: int | None) -> discord.Role | None:
     if role_id is None:
         return None
     return guild.get_role(role_id)
+
+
+async def _check_gov_access(interaction: discord.Interaction, *role_keys: str) -> bool:
+    """Return True if the caller is a guild admin or holds at least one of the given gov roles.
+
+    *role_keys* should be keys from the gov-roles config (e.g. ``"milcom"``, ``"econ"``, ``"ia"``).
+    Admins always pass regardless of configured roles.
+    """
+    guild_id = interaction.guild_id or 0
+    member = interaction.guild and interaction.guild.get_member(interaction.user.id)
+    if member and member.guild_permissions.administrator:
+        return True
+    if not member:
+        return False
+    gov_roles = bot.db.get_gov_roles(guild_id)
+    return any(
+        (role_id := gov_roles.get(key)) and any(r.id == role_id for r in member.roles)
+        for key in role_keys
+    )
 
 
 def _format_discord_identifier(row: object) -> str:
@@ -329,10 +361,8 @@ class FlameBot(discord.Client):
         self._api_runner: web.AppRunner | None = None
 
     async def setup_hook(self) -> None:
-        guild = discord.Object(id=config.GUILD_ID)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
-        log.info("Slash commands synced to guild %d.", config.GUILD_ID)
+        await self.tree.sync()
+        log.info("Slash commands synced globally.")
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%d)", self.user, self.user.id)
@@ -341,7 +371,7 @@ class FlameBot(discord.Client):
 
     async def _start_api(self) -> None:
         app = create_app(
-            guild_getter=lambda: self.get_guild(config.GUILD_ID),
+            guild_getter=lambda: self.get_guild(config.GUILD_ID) if config.GUILD_ID else None,
             api_key=config.API_KEY,  # type: ignore[arg-type]
             role_config=RoleConfig(
                 verified_role_id=config.VERIFIED_ROLE_ID,
@@ -740,14 +770,20 @@ def _parse_alliance_ids(raw: str) -> list[int] | None:
 
 @config_slots_group.command(
     name="set",
-    description="Set the alliance IDs monitored by /slots (admin only).",
+    description="Set the alliance IDs monitored by /slots (admin or milcom only).",
 )
 @app_commands.describe(
     alliance_ids="Comma-separated Politics and War alliance IDs to monitor."
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_gov_access(interaction, "milcom"):
+        await interaction.followup.send(
+            "❌ You need the **Administrator** or **Military Command** role to use this command.",
+            ephemeral=True,
+        )
+        return
 
     parsed = _parse_alliance_ids(alliance_ids)
     if parsed is None:
@@ -764,19 +800,6 @@ async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) 
         f"✅ /slots will now monitor alliance(s): `{', '.join(str(a) for a in parsed)}`",
         ephemeral=True,
     )
-
-
-@config_slots_set.error
-async def config_slots_set_error(
-    interaction: discord.Interaction, error: app_commands.AppCommandError
-) -> None:
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "❌ You need the **Administrator** permission to use this command.",
-            ephemeral=True,
-        )
-    else:
-        raise error
 
 
 @config_slots_group.command(
@@ -801,30 +824,24 @@ async def config_slots_show(interaction: discord.Interaction) -> None:
 
 @config_slots_group.command(
     name="clear",
-    description="Clear the /slots alliance configuration (admin only).",
+    description="Clear the /slots alliance configuration (admin or milcom only).",
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def config_slots_clear(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_gov_access(interaction, "milcom"):
+        await interaction.followup.send(
+            "❌ You need the **Administrator** or **Military Command** role to use this command.",
+            ephemeral=True,
+        )
+        return
+
     guild_id = interaction.guild_id or 0
     bot.db.set_slots_alliances(guild_id, [])
     log.info("Guild %d: /slots alliances cleared by %s", guild_id, interaction.user)
     await interaction.followup.send(
         "✅ /slots alliance configuration cleared.", ephemeral=True
     )
-
-
-@config_slots_clear.error
-async def config_slots_clear_error(
-    interaction: discord.Interaction, error: app_commands.AppCommandError
-) -> None:
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "❌ You need the **Administrator** permission to use this command.",
-            ephemeral=True,
-        )
-    else:
-        raise error
 
 
 # ---------------------------------------------------------------------------
@@ -1368,14 +1385,23 @@ bot.tree.add_command(setup_group)
 
 @setup_group.command(
     name="grant_channel",
-    description="Set the channel where /request grant posts are sent (admin only).",
+    description="Set the channel where /request grant posts are sent (admin, econ, or IA only).",
 )
 @app_commands.describe(channel="The text channel that will receive grant requests.")
-@app_commands.checks.has_permissions(administrator=True)
 async def setup_grant_channel(
     interaction: discord.Interaction, channel: discord.TextChannel
 ) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_gov_access(interaction, "econ", "ia"):
+        await interaction.followup.send(
+            embed=_error_embed(
+                "❌ You need the **Administrator**, **Economics**, or **Internal Affairs** role to use this command."
+            ),
+            ephemeral=True,
+        )
+        return
+
     guild_id = interaction.guild_id or 0
     bot.db.set_grant_channel(guild_id, channel.id)
     log.info("Guild %d: grant channel set to #%s (%d) by %s", guild_id, channel.name, channel.id, interaction.user)
@@ -1383,19 +1409,6 @@ async def setup_grant_channel(
         embed=_success_embed(f"✅ Grant requests will now be posted in {channel.mention}."),
         ephemeral=True,
     )
-
-
-@setup_grant_channel.error
-async def setup_grant_channel_error(
-    interaction: discord.Interaction, error: app_commands.AppCommandError
-) -> None:
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "❌ You need the **Administrator** permission to use this command.",
-            ephemeral=True,
-        )
-    else:
-        raise error
 
 
 # ---------------------------------------------------------------------------
@@ -1538,6 +1551,176 @@ async def request_grant(
 
 
 # ---------------------------------------------------------------------------
+# /admin  (command group)
+# ---------------------------------------------------------------------------
+
+admin_group = app_commands.Group(
+    name="admin",
+    description="Bot administration commands (admin only).",
+)
+bot.tree.add_command(admin_group)
+
+admin_alliance_group = app_commands.Group(
+    name="alliance",
+    description="Configure the guild's primary alliance.",
+)
+admin_group.add_command(admin_alliance_group)
+
+
+@admin_alliance_group.command(
+    name="set",
+    description="Set the primary alliance ID for this guild (admin only).",
+)
+@app_commands.describe(alliance_id="The Politics and War alliance ID to associate with this guild.")
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_alliance_set(interaction: discord.Interaction, alliance_id: int) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if alliance_id <= 0:
+        await interaction.followup.send(
+            "❌ Please provide a positive integer for the alliance ID.",
+            ephemeral=True,
+        )
+        return
+    guild_id = interaction.guild_id or 0
+    bot.db.set_alliance_id(guild_id, alliance_id)
+    log.info("Guild %d: primary alliance set to %d by %s", guild_id, alliance_id, interaction.user)
+    await interaction.followup.send(
+        f"✅ Primary alliance set to **{alliance_id}**.",
+        ephemeral=True,
+    )
+
+
+@admin_alliance_set.error
+async def admin_alliance_set_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+@admin_alliance_group.command(
+    name="show",
+    description="Show the primary alliance ID configured for this guild.",
+)
+async def admin_alliance_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    alliance_id = bot.db.get_alliance_id(guild_id)
+    if alliance_id is None:
+        await interaction.followup.send(
+            "ℹ️ No primary alliance configured. An admin can use `/admin alliance set` to set one.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"ℹ️ Primary alliance ID: **{alliance_id}**",
+            ephemeral=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# /color check
+# ---------------------------------------------------------------------------
+
+
+@bot.tree.command(
+    name="color",
+    description="Check whether alliance members are on the correct color.",
+)
+async def color_check(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    guild_id = interaction.guild_id or 0
+    alliance_id = bot.db.get_alliance_id(guild_id)
+    if alliance_id is None:
+        await interaction.followup.send(
+            embed=_info_embed(
+                "ℹ️ No primary alliance configured. An admin can use `/admin alliance set` to set one."
+            )
+        )
+        return
+
+    # Fetch the alliance to get its expected color
+    try:
+        alliance_info = await bot.pnw.get_alliance_by_id(alliance_id)
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance info for /color check")
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    if alliance_info is None:
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Alliance **{alliance_id}** not found on Politics and War.")
+        )
+        return
+
+    expected_color = alliance_info.color.strip().lower()
+
+    # Fetch members
+    try:
+        members = await bot.pnw.get_alliance_members([alliance_id])
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance members for /color check")
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    if not members:
+        await interaction.followup.send(
+            embed=_info_embed("ℹ️ No active members found for the configured alliance.")
+        )
+        return
+
+    # Find members not on the correct color (skip beige — it's involuntary)
+    wrong_color: list[tuple[Nation, str]] = []
+    for nation in members:
+        nation_color = nation.color.strip().lower()
+        if nation_color == "beige":
+            continue
+        if nation_color != expected_color:
+            wrong_color.append((nation, nation_color))
+
+    if not wrong_color:
+        embed = discord.Embed(
+            title="✅ Color Check",
+            description=(
+                f"All active members of **{alliance_info.name}** are on the correct color "
+                f"(**{expected_color.title()}**)."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text=f"{len(members)} members checked")
+        await interaction.followup.send(embed=embed)
+        return
+
+    lines = [
+        f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) — "
+        f"🎨 **{nation_color.title()}** (expected **{expected_color.title()}**)"
+        for nation, nation_color in wrong_color
+    ]
+    embed = discord.Embed(
+        title=f"⚠️ Color Check — {alliance_info.name}",
+        description="\n".join(lines),
+        color=discord.Color.orange(),
+    )
+    embed.set_footer(
+        text=(
+            f"{len(wrong_color)} member(s) on wrong color · "
+            f"{len(members)} total checked · expected: {expected_color.title()}"
+        )
+    )
+    await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
 # /help
 # ---------------------------------------------------------------------------
 
@@ -1552,10 +1735,13 @@ _HELP_COMMANDS = [
     ("/slots", "Show open defensive war slots for monitored alliances."),
     ("/roles setup", "Map server roles to government departments. *(admin)*"),
     ("/roles show", "Show the currently configured government roles."),
-    ("/config slots set <ids>", "Set alliance IDs monitored by /slots. *(admin)*"),
+    ("/config slots set <ids>", "Set alliance IDs monitored by /slots. *(admin or milcom)*"),
     ("/config slots show", "Show configured /slots alliance IDs."),
-    ("/config slots clear", "Clear the /slots alliance configuration. *(admin)*"),
-    ("/setup grant_channel <channel>", "Set the channel for grant requests. *(admin)*"),
+    ("/config slots clear", "Clear the /slots alliance configuration. *(admin or milcom)*"),
+    ("/setup grant_channel <channel>", "Set the channel for grant requests. *(admin, econ, or IA)*"),
+    ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
+    ("/admin alliance show", "Show the guild's configured primary alliance ID."),
+    ("/color", "Check whether alliance members are on the correct color."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <reason> [resources]", "Request a grant from the Economics team."),
     ("/help", "Show this help message."),
