@@ -695,8 +695,8 @@ class PnWClient:
                     population
                     domestic_policy
                     war_policy
-                    offensivewars
-                    defensivewars
+                    offensive_wars
+                    defensive_wars
                     cities {{
                         {_CITY_FIELDS}
                     }}
@@ -714,8 +714,8 @@ class PnWClient:
         nation.population = int(n.get("population") or 0)
         nation.domestic_policy = n.get("domestic_policy", "") or ""
         nation.war_policy = n.get("war_policy", "") or ""
-        nation.offensivewars = int(n.get("offensivewars") or 0)
-        nation.defensivewars = int(n.get("defensivewars") or 0)
+        nation.offensivewars = int(n.get("offensive_wars") or 0)
+        nation.defensivewars = int(n.get("defensive_wars") or 0)
         cities = [self._parse_city(c) for c in (n.get("cities") or [])]
         return nation, cities
 
@@ -779,7 +779,7 @@ class PnWClient:
             log.exception("Failed to fetch game_info")
             return GameInfo()
 
-
+    async def get_trade_prices(self) -> "TradePrice":
         """Fetch the lowest active buy-offer price for war-relevant resources.
 
         Uses the live trade market: querying open buy orders and taking the
