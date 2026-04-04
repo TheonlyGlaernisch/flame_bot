@@ -75,7 +75,7 @@ class Database:
 
     # Gov-role config helpers ---------------------------------------------------
 
-    _GOV_ROLE_KEYS = ("leader", "econ", "milcom", "ia", "gov")
+    _GOV_ROLE_KEYS = ("leader", "2ic", "econ", "econ_gov", "milcom", "milcom_gov", "ia", "ia_asst", "gov")
 
     def get_gov_roles(self, guild_id: int) -> dict[str, int | None]:
         """Return the Discord role IDs configured for each gov department, or None if unset."""

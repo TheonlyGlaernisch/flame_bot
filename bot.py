@@ -87,11 +87,12 @@ Commands
     Posts an embed with all details and the pre-formatted command:
     /transfer resources receiver:<id> transfer:{ money:1000,...} bank_note:#grant
 
-/request grant <reason> [note] [money] [food] [coal] [oil] [uranium] [iron]
+/request grant <note> [money] [food] [coal] [oil] [uranium] [iron]
                [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
     Request a grant from the Economics team.
     Posts an embed in the configured grant channel and pings the econ role.
-    If note is provided it is used as the bank_note (# prepended if missing).
+    note is used as the reason displayed in the embed and as the bank_note
+    in the Locutus command (# prepended automatically if missing).
     Requires both a grant channel and an econ role to be configured via
     /setup grant_channel and /roles setup respectively.
 
@@ -957,7 +958,7 @@ def _parse_alliance_ids(raw: str) -> list[int] | None:
 async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) -> None:
     await interaction.response.defer(ephemeral=True)
 
-    if not await _check_gov_access(interaction, "milcom"):
+    if not await _check_gov_access(interaction, "milcom", "milcom_gov"):
         await interaction.followup.send(
             "❌ You need the **Administrator** or **Military Command** role to use this command.",
             ephemeral=True,
@@ -1008,7 +1009,7 @@ async def config_slots_show(interaction: discord.Interaction) -> None:
 async def config_slots_clear(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
 
-    if not await _check_gov_access(interaction, "milcom"):
+    if not await _check_gov_access(interaction, "milcom", "milcom_gov"):
         await interaction.followup.send(
             "❌ You need the **Administrator** or **Military Command** role to use this command.",
             ephemeral=True,
@@ -1211,9 +1212,13 @@ async def slots(interaction: discord.Interaction) -> None:
 
 _GOV_DEPT_LABELS: dict[str, str] = {
     "leader": "Leader",
+    "2ic": "Second in Command",
     "econ": "Economics",
+    "econ_gov": "Economics Gov",
     "milcom": "Military Command",
+    "milcom_gov": "Military Command Gov",
     "ia": "Internal Affairs",
+    "ia_asst": "Internal Affairs Assistant",
     "gov": "Basic Gov",
 }
 
@@ -1230,18 +1235,26 @@ bot.tree.add_command(roles_group)
 )
 @app_commands.describe(
     leader="Role that counts as Leader.",
+    two_ic="Role that counts as Second in Command.",
     econ="Role that counts as Economics.",
+    econ_gov="Role that counts as Economics Gov.",
     milcom="Role that counts as Military Command.",
+    milcom_gov="Role that counts as Military Command Gov.",
     ia="Role that counts as Internal Affairs.",
+    ia_asst="Role that counts as Internal Affairs Assistant.",
     gov="Role that counts as Basic Gov.",
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def roles_setup(
     interaction: discord.Interaction,
     leader: discord.Role | None = None,
+    two_ic: discord.Role | None = None,
     econ: discord.Role | None = None,
+    econ_gov: discord.Role | None = None,
     milcom: discord.Role | None = None,
+    milcom_gov: discord.Role | None = None,
     ia: discord.Role | None = None,
+    ia_asst: discord.Role | None = None,
     gov: discord.Role | None = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
@@ -1251,9 +1264,13 @@ async def roles_setup(
 
     updates = {
         "leader": leader.id if leader else current["leader"],
+        "2ic": two_ic.id if two_ic else current["2ic"],
         "econ": econ.id if econ else current["econ"],
+        "econ_gov": econ_gov.id if econ_gov else current["econ_gov"],
         "milcom": milcom.id if milcom else current["milcom"],
+        "milcom_gov": milcom_gov.id if milcom_gov else current["milcom_gov"],
         "ia": ia.id if ia else current["ia"],
+        "ia_asst": ia_asst.id if ia_asst else current["ia_asst"],
         "gov": gov.id if gov else current["gov"],
     }
     bot.db.set_gov_roles(guild_id, updates)
@@ -1320,9 +1337,13 @@ async def roles_show(interaction: discord.Interaction) -> None:
 # Emoji prefix for each department shown in the /gov embed.
 _GOV_DEPT_EMOJI: dict[str, str] = {
     "leader": "👑",
+    "2ic": "🥈",
     "econ": "💰",
+    "econ_gov": "📊",
     "milcom": "⚔️",
+    "milcom_gov": "🛡️",
     "ia": "🤝",
+    "ia_asst": "📋",
     "gov": "🏛️",
 }
 
@@ -1460,8 +1481,7 @@ async def send_resources(
     member = interaction.guild and interaction.guild.get_member(interaction.user.id)
     is_admin = member and member.guild_permissions.administrator
     if not is_admin:
-        econ_role_id = bot.db.get_gov_roles(guild_id).get("econ")
-        if not econ_role_id or not member or not any(r.id == econ_role_id for r in member.roles):
+        if not await _check_gov_access(interaction, "econ", "econ_gov"):
             await interaction.followup.send(
                 embed=_error_embed("❌ You need the **Economics** role to use this command."),
                 ephemeral=True,
@@ -1579,7 +1599,7 @@ async def setup_grant_channel(
 ) -> None:
     await interaction.response.defer(ephemeral=True)
 
-    if not await _check_gov_access(interaction, "econ", "ia"):
+    if not await _check_gov_access(interaction, "econ", "econ_gov", "ia", "ia_asst"):
         await interaction.followup.send(
             embed=_error_embed(
                 "❌ You need the **Administrator**, **Economics**, or **Internal Affairs** role to use this command."
@@ -1613,8 +1633,7 @@ bot.tree.add_command(request_group)
     description="Request a grant from the Economics team.",
 )
 @app_commands.describe(
-    reason="Why you need this grant.",
-    note="Custom bank note for the transfer (# will be added automatically if omitted).",
+    note="Reason / bank note for this grant (# will be prepended automatically).",
     money="Amount of money.",
     food="Amount of food.",
     coal="Amount of coal.",
@@ -1630,8 +1649,7 @@ bot.tree.add_command(request_group)
 )
 async def request_grant(
     interaction: discord.Interaction,
-    reason: str,
-    note: str | None = None,
+    note: str,
     money: float | None = None,
     food: float | None = None,
     coal: float | None = None,
@@ -1699,10 +1717,8 @@ async def request_grant(
     def _fmt_amount(v: float) -> str:
         return str(int(v)) if v == int(v) else str(v)
 
-    # Build the bank note: use custom note if provided, prepending # if needed.
-    bank_note = note if note is not None else "grant"
-    if not bank_note.startswith("#"):
-        bank_note = f"#{bank_note}"
+    # Build the bank note: prepend # if not already present.
+    bank_note = note if note.startswith("#") else f"#{note}"
 
     # Determine receiver for the Locutus command: use registered nation ID if available.
     reg = bot.db.get_by_discord_id(interaction.user.id)
@@ -1722,7 +1738,7 @@ async def request_grant(
     )
     embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
     embed.add_field(name="Receiver", value=receiver, inline=True)
-    embed.add_field(name="Reason", value=reason, inline=False)
+    embed.add_field(name="Note", value=note, inline=False)
 
     res_lines = [
         f"**{name.title()}:** {_fmt_amount(val)}" for name, val in resources.items()
@@ -1980,7 +1996,7 @@ _HELP_COMMANDS = [
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
-    ("/request grant <reason> [note] [resources]", "Request a grant from the Economics team."),
+    ("/request grant <note> [resources]", "Request a grant from the Economics team."),
     ("/help", "Show this help message."),
 ]
 
