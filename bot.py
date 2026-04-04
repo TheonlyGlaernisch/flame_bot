@@ -2500,22 +2500,24 @@ _PNW_MAX_DEF_WARS = 3
 
 
 def _build_missile_targets_embed(
-    nations: list[tuple[pnw_api.Nation, int]],
+    nations: list[tuple[pnw_api.Nation, int, float]],
     alliance_names: list[str],
 ) -> discord.Embed:
     """Build the missile-targets embed.
 
-    *nations* is a list of (Nation, active_defensive_wars) tuples,
+    *nations* is a list of (Nation, active_defensive_wars, avg_infra) tuples,
     already sorted and limited to the top N.
     """
     title = "🚀 Missile Targets — " + ", ".join(alliance_names)
     lines: list[str] = []
-    for i, (nation, def_wars) in enumerate(nations, start=1):
+    for i, (nation, def_wars, avg_infra) in enumerate(nations, start=1):
         beige = " 🔵" if nation.beige_turns > 0 else ""
+        infra_str = f" | 🏗️ {avg_infra:,.0f} avg infra" if avg_infra > 0 else ""
         line = (
             f"`{i:>3}.` [{nation.nation_name}]({_nation_url(nation.nation_id)})"
             f"{beige}"
             f" — 🏙️ {nation.num_cities}"
+            f"{infra_str}"
             f" | 🛡️ {def_wars}/{_PNW_MAX_DEF_WARS} def"
         )
         lines.append(line)
@@ -2526,7 +2528,7 @@ def _build_missile_targets_embed(
         color=discord.Color.red(),
     )
     embed.set_footer(
-        text=f"Top {len(nations)} · sorted by cities desc · open def slots only · 🔵 = beiged"
+        text=f"Top {len(nations)} · sorted by avg infra desc · open def slots only · 🔵 = beiged"
     )
     return embed
 
@@ -2597,9 +2599,24 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
         )
         return
 
-    # Sort by cities descending (best proxy for infra value) and take top N
-    open_slot_nations.sort(key=lambda t: t[0].num_cities, reverse=True)
-    top_nations = open_slot_nations[:_MISSILE_TOP_N]
+    # Fetch avg infra per city for the open-slot nations
+    open_ids = [n.nation_id for n, _ in open_slot_nations]
+    try:
+        avg_infra_map = await bot.pnw.get_nations_avg_infra(open_ids)
+    except Exception:
+        log.exception("PnW API error while fetching avg infra for missile targets")
+        avg_infra_map = {}
+
+    # Sort by avg infra descending, fall back to city count for ties
+    open_slot_nations.sort(
+        key=lambda t: (avg_infra_map.get(t[0].nation_id, 0.0), t[0].num_cities),
+        reverse=True,
+    )
+    top_nations_raw = open_slot_nations[:_MISSILE_TOP_N]
+    top_nations = [
+        (n, def_wars, avg_infra_map.get(n.nation_id, 0.0))
+        for n, def_wars in top_nations_raw
+    ]
 
     # Collect distinct alliance names for the embed title
     seen: set[int] = set()
