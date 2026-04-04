@@ -3023,7 +3023,265 @@ async def war_range_targets(
     await interaction.followup.send(embed=embed, view=view)
 
 
+# ---------------------------------------------------------------------------
+# /city cost
+# ---------------------------------------------------------------------------
+
+city_group = app_commands.Group(name="city", description="City-related commands.")
+bot.tree.add_command(city_group)
+
+
+@city_group.command(
+    name="cost",
+    description="Calculate city purchase cost using the live dynamic formula.",
+)
+@app_commands.describe(
+    current="Current number of cities.",
+    target="Target number of cities (defaults to current + 1).",
+    manifest_destiny="Is the nation's domestic policy Manifest Destiny? (−5% cost)",
+    government_support_agency="Does the nation have Government Support Agency? (additional −2.5%)",
+)
+async def city_cost_command(
+    interaction: discord.Interaction,
+    current: int,
+    target: Optional[int] = None,
+    manifest_destiny: bool = False,
+    government_support_agency: bool = False,
+) -> None:
+    await interaction.response.defer()
+
+    if current < 0:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Current city count must be 0 or greater.")
+        )
+        return
+
+    if target is None:
+        target = current + 1
+
+    if target <= current:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Target city count must be greater than current.")
+        )
+        return
+
+    if target - current > 50:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Range too large — maximum 50 cities at a time.")
+        )
+        return
+
+    # Fetch live city_average from game_info
+    try:
+        game_info = await bot.pnw.get_game_info()
+    except Exception:
+        game_info = GameInfo()
+
+    city_avg = game_info.city_average
+
+    total_cost = 0.0
+    rows: list[str] = []
+    for c in range(current, target):
+        cost = calculate_city_cost(
+            c,
+            city_average=city_avg,
+            manifest_destiny=manifest_destiny,
+            government_support_agency=government_support_agency,
+        )
+        total_cost += cost
+        rows.append(f"City **{c + 1}→{c + 2}**: ${cost:,.0f}")
+
+    embed = discord.Embed(
+        title="🏙️ City Cost Calculator",
+        color=discord.Color.green(),
+    )
+
+    # If only one city, show inline detail; otherwise summarise
+    if len(rows) == 1:
+        embed.description = rows[0]
+    else:
+        # Show individual rows for small ranges, just total for large ones
+        if len(rows) <= 20:
+            embed.description = "\n".join(rows)
+        else:
+            embed.description = f"*Buying {len(rows)} cities ({current + 1}→{target})*"
+        embed.add_field(name="Total Cost", value=f"**${total_cost:,.0f}**", inline=False)
+
+    discount_notes: list[str] = []
+    if manifest_destiny:
+        pct = 7.5 if government_support_agency else 5.0
+        discount_notes.append(
+            f"Manifest Destiny{' + GSA' if government_support_agency else ''} (−{pct:.1f}%)"
+        )
+    embed.add_field(
+        name="Discounts",
+        value="\n".join(discount_notes) if discount_notes else "None",
+        inline=True,
+    )
+    embed.set_footer(text=f"City average used: {city_avg:.2f}  ·  Formula: Locutus dynamic")
+
+    await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /revenue
+# ---------------------------------------------------------------------------
+
+async def _handle_revenue(
+    interaction: discord.Interaction,
+    pnw: PnWClient,
+    query: str,
+) -> None:
+    """Resolve a nation from *query* (same semantics as /whois) and display revenue."""
+    query = query.strip()
+
+    # --- resolve nation_id from the query (mirrors _handle_whois logic) ---
+    nation_id: Optional[int] = None
+
+    mention_match = _MENTION_RE.match(query)
+    if mention_match:
+        target_id = int(mention_match.group(1))
+        row = bot.db.get_by_discord_id(target_id)
+        if row is not None:
+            nation_id = int(row["nation_id"])
+        else:
+            # Try PnW discord tag lookup
+            member = interaction.guild and interaction.guild.get_member(target_id)
+            if member is None and interaction.guild is not None:
+                try:
+                    member = await interaction.guild.fetch_member(target_id)
+                except discord.HTTPException:
+                    member = None
+            if member is not None:
+                try:
+                    n = await pnw.get_nation_by_discord_tag(member.name)
+                    if n is not None and PnWClient.discord_matches(n.discord_tag, member.name):
+                        nation_id = n.nation_id
+                except Exception:
+                    pass
+            if nation_id is None:
+                await interaction.followup.send(
+                    embed=_info_embed(f"ℹ️ <@{target_id}> has no registered nation.")
+                )
+                return
+    elif query.lstrip("-").isdigit():
+        nation_id = int(query)
+    else:
+        # Nation name or Discord username
+        try:
+            n = await pnw.get_nation_by_name(query)
+            if n is not None:
+                nation_id = n.nation_id
+        except Exception:
+            pass
+        if nation_id is None:
+            row = bot.db.get_by_discord_username(query)
+            if row is not None:
+                nation_id = int(row["nation_id"])
+        if nation_id is None:
+            await interaction.followup.send(
+                embed=_info_embed(f"ℹ️ No nation found for `{query}`.")
+            )
+            return
+
+    # --- fetch nation + cities ---
+    try:
+        result = await pnw.get_nation_with_cities(nation_id)
+    except Exception as exc:
+        log.exception("PnW API error fetching nation/cities for /revenue")
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    if result is None:
+        await interaction.followup.send(
+            embed=_info_embed(f"ℹ️ No nation with ID `{nation_id}` was found.")
+        )
+        return
+
+    nation, cities = result
+
+    # --- fetch game_info for accurate food (radiation, season) ---
+    try:
+        game_info = await pnw.get_game_info()
+    except Exception:
+        game_info = GameInfo()
+
+    rev = compute_nation_revenue(nation, cities, game_info)
+
+    # --- build embed ---
+    embed = discord.Embed(
+        title=f"💰 Revenue — {nation.nation_name}",
+        url=_nation_url(nation.nation_id),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="🏙️ Cities", value=str(nation.num_cities), inline=True)
+    embed.add_field(name="🛒 Avg Commerce", value=f"{rev.avg_commerce:.1f}%", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    embed.add_field(name="💵 Money/day", value=f"${rev.money:,.0f}", inline=True)
+    embed.add_field(name="🌾 Food/day (net)", value=f"{rev.food:+,.2f}", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+    # Raw resources
+    raws = [
+        ("⛏️ Coal",    rev.coal),
+        ("🛢️ Oil",     rev.oil),
+        ("☢️ Uranium", rev.uranium),
+        ("🔩 Iron",    rev.iron),
+        ("🪨 Bauxite", rev.bauxite),
+        ("🔦 Lead",    rev.lead),
+    ]
+    raw_lines = "\n".join(
+        f"{icon} **{name}**: {val:+,.2f}/day"
+        for icon, name, val in (
+            ("⛏️", "Coal",    rev.coal),
+            ("🛢️", "Oil",     rev.oil),
+            ("☢️", "Uranium", rev.uranium),
+            ("🔩", "Iron",    rev.iron),
+            ("🪨", "Bauxite", rev.bauxite),
+            ("🔦", "Lead",    rev.lead),
+        )
+    )
+    embed.add_field(name="Raw Resources", value=raw_lines or "*none*", inline=True)
+
+    mfg_lines = "\n".join(
+        f"{icon} **{name}**: {val:+,.2f}/day"
+        for icon, name, val in (
+            ("⛽", "Gasoline",  rev.gasoline),
+            ("💣", "Munitions", rev.munitions),
+            ("🔧", "Steel",     rev.steel),
+            ("🪟", "Aluminum",  rev.aluminum),
+        )
+    )
+    embed.add_field(name="Manufactured", value=mfg_lines or "*none*", inline=True)
+
+    embed.set_footer(
+        text=(
+            f"Food: {rev.food_production:,.2f} prod − {rev.food_consumption:,.2f} use  ·  "
+            f"Season month: {game_info.game_month}  ·  "
+            f"Gross (before tax)"
+        )
+    )
+
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(
+    name="revenue",
+    description="Show estimated gross daily revenue for a PnW nation.",
+)
+@app_commands.describe(
+    query="A nation ID, @mention, nation name, or Discord username."
+)
+async def revenue_command(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    await _handle_revenue(interaction, bot.pnw, query)
+
+
 _HELP_COMMANDS = [
+    ("/register <nation_id>", "Link your Discord account to a PnW nation."),
     ("/unregister", "Remove your PnW nation registration."),
     ("/whois <query>", "Look up a nation by ID, name, or @mention."),
     ("/revenue <query>", "Show estimated gross daily revenue for a nation (same lookup as /whois)."),
