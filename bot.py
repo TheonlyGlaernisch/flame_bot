@@ -2314,7 +2314,7 @@ async def damage_command(
     if not damage_map:
         await interaction.followup.send(
             embed=_info_embed(
-                "ℹ️ No offensive wars found for the configured alliance in the past week."
+                "ℹ️ No wars found for the configured alliance in the past week."
             )
         )
         return

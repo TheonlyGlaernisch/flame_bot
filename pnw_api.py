@@ -577,35 +577,57 @@ class PnWClient:
         alliance_id: int,
         after: datetime,
     ) -> dict[int, dict[str, Any]]:
-        """Return per-nation offensive damage and loot totals for wars started after *after*.
+        """Return per-nation damage and loot totals for wars started after *after*.
 
-        Only wars where *alliance_id* is the attacker are counted.
+        Both offensive wars (where *alliance_id* is the attacker) and defensive
+        wars (where *alliance_id* is the defender) are counted.  A nation that
+        fought in both roles has all contributions accumulated into a single entry.
 
         Phase 1 – wars query: collects infra destroyed value, money looted, and
-        war IDs for all qualifying offensive wars.
+        war IDs for all qualifying wars.
 
         Phase 2 – warattacks query: for each collected war, fetches individual
         attacks of type ``GROUND`` (regular ground battle) or ``VICTORY`` (beige
-        loot), filters to attacks where the member's nation is the victor, and
-        parses the ``loot_info`` text to accumulate resource loot totals.
+        loot), and parses the ``loot_info`` text to accumulate resource loot
+        totals for each member that was the victor of that specific attack.
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
-            "num_cities": int,      # attacker's current city count
+            "num_cities": int,      # nation's current city count
             "infra_value": float,   # monetary value of infrastructure destroyed
-            "money_looted": float,  # money looted (from war-level aggregate)
-            "gas_looted": float,    # gasoline looted on attacker victories
-            "mun_looted": float,    # munitions looted on attacker victories
-            "alum_looted": float,   # aluminum looted on attacker victories
-            "steel_looted": float,  # steel looted on attacker victories
-            "def_gas_used": float,  # gasoline the defender was forced to spend
-            "def_mun_used": float,  # munitions the defender was forced to spend
-            "def_alum_used": float, # aluminum the defender was forced to spend
-            "def_steel_used": float,# steel the defender was forced to spend
+                                    #   (att_infra_destroyed_value for offensive wars
+                                    #    + def_infra_destroyed_value for defensive wars)
+            "money_looted": float,  # money looted (war-level aggregate, offensive only)
+            "gas_looted": float,    # gasoline looted on member victories
+            "mun_looted": float,    # munitions looted on member victories
+            "alum_looted": float,   # aluminum looted on member victories
+            "steel_looted": float,  # steel looted on member victories
+            "def_gas_used": float,  # gasoline the enemy was forced to spend
+            "def_mun_used": float,  # munitions the enemy was forced to spend
+            "def_alum_used": float, # aluminum the enemy was forced to spend
+            "def_steel_used": float,# steel the enemy was forced to spend
         }.
         """
         results: dict[int, dict[str, Any]] = {}
         war_ids: list[int] = []
+        # Nation IDs of members who appeared as defenders in at least one war.
+        def_members: set[int] = set()
+
+        def _make_entry(nation_name: str, num_cities: int) -> dict[str, Any]:
+            return {
+                "nation_name": nation_name,
+                "num_cities": num_cities,
+                "infra_value": 0.0,
+                "money_looted": 0.0,
+                "gas_looted": 0.0,
+                "mun_looted": 0.0,
+                "alum_looted": 0.0,
+                "steel_looted": 0.0,
+                "def_gas_used": 0.0,
+                "def_mun_used": 0.0,
+                "def_alum_used": 0.0,
+                "def_steel_used": 0.0,
+            }
 
         # ------------------------------------------------------------------
         # Phase 1: collect qualifying wars.
@@ -618,15 +640,26 @@ class PnWClient:
                     data {
                         id
                         att_id
+                        def_id
                         att_alliance_id
+                        def_alliance_id
                         date
                         att_infra_destroyed_value
+                        def_infra_destroyed_value
                         att_money_looted
+                        att_gas_used
+                        att_mun_used
+                        att_alum_used
+                        att_steel_used
                         def_gas_used
                         def_mun_used
                         def_alum_used
                         def_steel_used
                         attacker {
+                            nation_name
+                            num_cities
+                        }
+                        defender {
                             nation_name
                             num_cities
                         }
@@ -657,49 +690,56 @@ class PnWClient:
                 if war_date is not None and war_date >= after:
                     all_before_cutoff = False
 
-                if int(war.get("att_alliance_id") or 0) != alliance_id:
-                    continue
                 if war_date is None or war_date < after:
                     continue
 
-                att_id = int(war.get("att_id") or 0)
-                if att_id == 0:
-                    continue
-
                 war_id = int(war.get("id") or 0)
-                attacker_data = war.get("attacker") or {}
-                nation_name = attacker_data.get("nation_name") or str(att_id)
-                num_cities = int(attacker_data.get("num_cities") or 0)
+                att_alliance = int(war.get("att_alliance_id") or 0)
+                def_alliance = int(war.get("def_alliance_id") or 0)
 
-                entry = results.setdefault(
-                    att_id,
-                    {
-                        "nation_name": nation_name,
-                        "num_cities": num_cities,
-                        "infra_value": 0.0,
-                        "money_looted": 0.0,
-                        "gas_looted": 0.0,
-                        "mun_looted": 0.0,
-                        "alum_looted": 0.0,
-                        "steel_looted": 0.0,
-                        "def_gas_used": 0.0,
-                        "def_mun_used": 0.0,
-                        "def_alum_used": 0.0,
-                        "def_steel_used": 0.0,
-                    },
-                )
-                # Keep the most up-to-date city count seen across wars.
-                if num_cities > entry["num_cities"]:
-                    entry["num_cities"] = num_cities
-                entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
-                entry["money_looted"] += float(war.get("att_money_looted") or 0)
-                entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
-                entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
-                entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
-                entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
+                # ---- Offensive contribution (our member is the attacker) ----
+                if att_alliance == alliance_id:
+                    att_id = int(war.get("att_id") or 0)
+                    if att_id:
+                        attacker_data = war.get("attacker") or {}
+                        nation_name = attacker_data.get("nation_name") or str(att_id)
+                        num_cities = int(attacker_data.get("num_cities") or 0)
 
-                if war_id:
-                    war_ids.append(war_id)
+                        entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
+                        if num_cities > entry["num_cities"]:
+                            entry["num_cities"] = num_cities
+                        entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
+                        entry["money_looted"] += float(war.get("att_money_looted") or 0)
+                        entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
+                        entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
+                        entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
+                        entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
+
+                        if war_id:
+                            war_ids.append(war_id)
+
+                # ---- Defensive contribution (our member is the defender) ----
+                # Skip intra-alliance wars to avoid double-counting.
+                if def_alliance == alliance_id and att_alliance != alliance_id:
+                    def_id = int(war.get("def_id") or 0)
+                    if def_id:
+                        defender_data = war.get("defender") or {}
+                        nation_name = defender_data.get("nation_name") or str(def_id)
+                        num_cities = int(defender_data.get("num_cities") or 0)
+
+                        entry = results.setdefault(def_id, _make_entry(nation_name, num_cities))
+                        if num_cities > entry["num_cities"]:
+                            entry["num_cities"] = num_cities
+                        entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
+                        # Resources the enemy attacker was forced to spend.
+                        entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
+                        entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
+                        entry["def_alum_used"] += float(war.get("att_alum_used") or 0)
+                        entry["def_steel_used"] += float(war.get("att_steel_used") or 0)
+
+                        def_members.add(def_id)
+                        if war_id and war_id not in war_ids:
+                            war_ids.append(war_id)
 
             # Stop once there are no more pages or every war on this page predates
             # the cutoff (the API returns wars in descending date order).
@@ -714,8 +754,8 @@ class PnWClient:
         # Phase 2: collect resource loot from individual attack records.
         # We look for GROUND attacks (per-city loot on a ground battle win)
         # and VICTORY attacks (beige loot when resistance hits 0).
-        # In both cases the winner is identified by victor == att_id (nation
-        # ID of the attacking nation for that specific attack).
+        # For offensive wars the winner is identified by victor == att_id;
+        # for defensive wars the winner is identified by victor == def_id.
         # ------------------------------------------------------------------
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
         _BATCH = _WARATTACKS_BATCH_SIZE
@@ -728,6 +768,7 @@ class PnWClient:
                     warattacks(war_id: $war_id, page: $page, first: 100) {
                         data {
                             att_id
+                            def_id
                             type
                             victor
                             loot_info
@@ -756,24 +797,29 @@ class PnWClient:
                     if str(attack.get("type") or "") not in _LOOT_TYPES:
                         continue
 
-                    att_id = int(attack.get("att_id") or 0)
-                    if att_id not in results:
-                        continue
-
-                    # victor is the nation ID of the winner; skip if our member lost.
                     victor = int(attack.get("victor") or 0)
-                    if victor != att_id:
-                        continue
-
                     loot_info = attack.get("loot_info") or ""
-                    if not loot_info:
+                    if not loot_info or not victor:
                         continue
 
-                    gas, mun, alum, steel = _parse_resource_loot(loot_info)
-                    results[att_id]["gas_looted"] += gas
-                    results[att_id]["mun_looted"] += mun
-                    results[att_id]["alum_looted"] += alum
-                    results[att_id]["steel_looted"] += steel
+                    att_id = int(attack.get("att_id") or 0)
+                    def_id = int(attack.get("def_id") or 0)
+
+                    # Offensive loot: our attacker won this attack.
+                    if att_id in results and victor == att_id:
+                        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+                        results[att_id]["gas_looted"] += gas
+                        results[att_id]["mun_looted"] += mun
+                        results[att_id]["alum_looted"] += alum
+                        results[att_id]["steel_looted"] += steel
+
+                    # Defensive loot: our defender won this attack.
+                    elif def_id in def_members and victor == def_id:
+                        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+                        results[def_id]["gas_looted"] += gas
+                        results[def_id]["mun_looted"] += mun
+                        results[def_id]["alum_looted"] += alum
+                        results[def_id]["steel_looted"] += steel
 
                 if not atk_has_more:
                     break
