@@ -128,10 +128,15 @@ from pnw_api import (
     WAR_RANGE_MAX_RATIO,
     WAR_RANGE_MIN_RATIO,
     AllianceInfo,
+    City,
+    GameInfo,
     Nation,
+    NationRevenue,
     PnWClient,
     TradePrice,
+    calculate_city_cost,
     calculate_infra_cost,
+    compute_nation_revenue,
 )
 
 # ---------------------------------------------------------------------------
@@ -3019,9 +3024,10 @@ async def war_range_targets(
 
 
 _HELP_COMMANDS = [
-    ("/register <nation_id>", "Link your Discord account to a PnW nation."),
     ("/unregister", "Remove your PnW nation registration."),
     ("/whois <query>", "Look up a nation by ID, name, or @mention."),
+    ("/revenue <query>", "Show estimated gross daily revenue for a nation (same lookup as /whois)."),
+    ("/city cost <current> [target] [options]", "Calculate city purchase cost(s) using the live dynamic formula."),
     ("/alliance info <query>", "Look up an alliance by ID or name."),
     ("/alliance members <query>", "List members of an alliance (10 per page)."),
     ("/test whois <query>", "Look up a nation via the PnW test API."),
