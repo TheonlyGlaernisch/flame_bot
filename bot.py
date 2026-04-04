@@ -2099,7 +2099,7 @@ def _build_leaderboard_page(
             munitions=s["mun_looted"],
             aluminum=s["alum_looted"],
             steel=s["steel_looted"],
-        ) + res_dmg
+        )
         city_str = f" · {cities}🏙️" if cities > 0 else ""
         stats = "  ".join([
             _lb_stat(infra,   "🏗️", cities, sort_mode in ("infra", "dmg_city")),
@@ -2115,7 +2115,7 @@ def _build_leaderboard_page(
     if total_pages > 1:
         footer_parts.append(f"Page {page + 1}/{total_pages}")
     footer_parts.append(f"{len(sorted_nations)} members")
-    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot (money + res dmg @ mkt)  (/c = per city)")
+    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot (money + looted res @ mkt)  (/c = per city)")
 
     embed = discord.Embed(
         title=f"⚔️ War Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
