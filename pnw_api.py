@@ -598,7 +598,9 @@ class PnWClient:
                                     #   (att_infra_destroyed_value for offensive wars
                                     #    + def_infra_destroyed_value for defensive wars)
             "money_looted": float,  # money looted (att_money_looted for offensive wars
-                                    #   + def_money_looted for defensive wars)
+                                    #   only; defensive wars do not contribute because
+                                    #   def_money_looted is what the enemy took FROM the
+                                    #   defender, not what the defender looted)
             "gas_looted": float,    # gasoline looted on member victories
             "mun_looted": float,    # munitions looted on member victories
             "alum_looted": float,   # aluminum looted on member victories
@@ -731,7 +733,8 @@ class PnWClient:
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
                         entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("def_money_looted") or 0)
+                        # def_money_looted is money the ATTACKER looted FROM the defender
+                        # (loot the defender lost, not gained), so we do not credit it here.
                         # Resources the enemy attacker was forced to spend.
                         entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
