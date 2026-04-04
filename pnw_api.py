@@ -682,6 +682,10 @@ class PnWClient:
                         "mun_looted": 0.0,
                         "alum_looted": 0.0,
                         "steel_looted": 0.0,
+                        "def_gas_used": 0.0,
+                        "def_mun_used": 0.0,
+                        "def_alum_used": 0.0,
+                        "def_steel_used": 0.0,
                     },
                 )
                 # Keep the most up-to-date city count seen across wars.
@@ -689,6 +693,10 @@ class PnWClient:
                     entry["num_cities"] = num_cities
                 entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
                 entry["money_looted"] += float(war.get("att_money_looted") or 0)
+                entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
+                entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
+                entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
+                entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
 
                 if war_id:
                     war_ids.append(war_id)
