@@ -2491,6 +2491,171 @@ async def spy_target_find(interaction: discord.Interaction, alliances: str) -> N
     await interaction.followup.send(embed=embed, view=view)
 
 
+# ---------------------------------------------------------------------------
+# /missile targets find
+# ---------------------------------------------------------------------------
+
+_MISSILE_TOP_N = 20
+_PNW_MAX_DEF_WARS = 3
+
+
+def _estimate_avg_infra(nation: pnw_api.Nation) -> float:
+    """Estimate average infrastructure per city from the nation's score.
+
+    Uses the same formula as /whois:
+        score = (cities-1)*100 + 10 + projects*20 + total_infra/40 + military_score
+        => avg_infra = (score - (cities-1)*100 - 10 - projects*20 - military_score) * 40 / cities
+    """
+    if nation.num_cities <= 0:
+        return 0.0
+    military_score = (
+        nation.soldiers * 0.0004
+        + nation.tanks * 0.025
+        + nation.aircraft * 0.3
+        + nation.ships * 1.0
+        + nation.missiles * 5.0
+        + nation.nukes * 15.0
+    )
+    infra_score = (
+        nation.score
+        - (nation.num_cities - 1) * 100
+        - 10
+        - nation.num_projects * 20
+        - military_score
+    )
+    return max(0.0, infra_score * 40 / nation.num_cities)
+
+
+def _build_missile_targets_embed(
+    nations: list[tuple[pnw_api.Nation, int, float]],
+    alliance_names: list[str],
+) -> discord.Embed:
+    """Build the missile-targets embed.
+
+    *nations* is a list of (Nation, active_defensive_wars, avg_infra) tuples,
+    already sorted and limited to the top N.
+    """
+    title = "🚀 Missile Targets — " + ", ".join(alliance_names)
+    lines: list[str] = []
+    for i, (nation, def_wars, avg_infra) in enumerate(nations, start=1):
+        beige = " 🔵" if nation.beige_turns > 0 else ""
+        infra_str = f" | 🏗️ {avg_infra:,.0f} avg infra" if avg_infra > 0 else ""
+        line = (
+            f"`{i:>3}.` [{nation.nation_name}]({_nation_url(nation.nation_id)})"
+            f"{beige}"
+            f" — 🏙️ {nation.num_cities}"
+            f"{infra_str}"
+            f" | 🛡️ {def_wars}/{_PNW_MAX_DEF_WARS} def"
+        )
+        lines.append(line)
+
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(lines) if lines else "*(no targets found)*",
+        color=discord.Color.red(),
+    )
+    embed.set_footer(
+        text=f"Top {len(nations)} · sorted by avg infra desc · open def slots only · 🔵 = beiged"
+    )
+    return embed
+
+
+missile_group = app_commands.Group(
+    name="missile",
+    description="Missile-related commands.",
+)
+bot.tree.add_command(missile_group)
+
+missile_targets_group = app_commands.Group(
+    name="targets",
+    description="Find nations to target with missile strikes.",
+)
+missile_group.add_command(missile_targets_group)
+
+
+@missile_targets_group.command(
+    name="find",
+    description="Top 20 nations in the /slots alliances with the most cities that have open defensive slots.",
+)
+async def missile_target_find(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    guild_id = interaction.guild_id or 0
+    alliance_ids = bot.db.get_slots_alliances(guild_id)
+
+    if not alliance_ids:
+        await interaction.followup.send(
+            embed=_info_embed(
+                "ℹ️ No alliances configured. An admin can use `/config slots set` to set them up."
+            )
+        )
+        return
+
+    try:
+        members = await bot.pnw.get_alliance_members(alliance_ids)
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance members for missile targets")
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    if not members:
+        await interaction.followup.send(
+            embed=_info_embed("ℹ️ No active members found for the configured alliance(s).")
+        )
+        return
+
+    nation_ids = [n.nation_id for n in members]
+    try:
+        war_counts = await bot.pnw.get_active_war_counts(nation_ids)
+    except Exception:
+        log.exception("PnW API error while fetching war counts for missile targets")
+        war_counts = {}
+
+    # Keep only nations that have at least one open defensive slot
+    open_slot_nations = [
+        (n, war_counts.get(n.nation_id, 0))
+        for n in members
+        if war_counts.get(n.nation_id, 0) < _PNW_MAX_DEF_WARS
+    ]
+
+    if not open_slot_nations:
+        await interaction.followup.send(
+            embed=_info_embed("ℹ️ All nations in the configured alliances currently have full defensive slots.")
+        )
+        return
+
+    # Fetch avg infra per city for the open-slot nations using the score formula
+    # (same as /whois — no extra API call needed)
+    avg_infra_map: dict[int, float] = {
+        n.nation_id: _estimate_avg_infra(n) for n, _ in open_slot_nations
+    }
+
+    # Sort by avg infra descending, fall back to city count for ties
+    open_slot_nations.sort(
+        key=lambda t: (avg_infra_map.get(t[0].nation_id, 0.0), t[0].num_cities),
+        reverse=True,
+    )
+    top_nations_raw = open_slot_nations[:_MISSILE_TOP_N]
+    top_nations = [
+        (n, def_wars, avg_infra_map.get(n.nation_id, 0.0))
+        for n, def_wars in top_nations_raw
+    ]
+
+    # Collect distinct alliance names for the embed title
+    seen: set[int] = set()
+    alliance_names: list[str] = []
+    for n, _ in top_nations:
+        if n.alliance_id not in seen:
+            seen.add(n.alliance_id)
+            if n.alliance_name:
+                alliance_names.append(n.alliance_name)
+    if not alliance_names:
+        alliance_names = [str(aid) for aid in alliance_ids]
+
+    embed = _build_missile_targets_embed(top_nations, alliance_names)
+    await interaction.followup.send(embed=embed)
 
 
 _HELP_COMMANDS = [
@@ -2517,6 +2682,7 @@ _HELP_COMMANDS = [
     ("/color", "Check whether alliance members are on the correct color."),
     ("/damage leaderboard", "Show loot leaderboard (money + resources at market price from ground/beige victories, past 7 days) with infra damage."),
     ("/spy target find <alliances>", "Find nations in given alliances (comma-separated names or IDs) sorted by spy capacity (cities)."),
+    ("/missile targets find", "Top 20 nations in the /slots alliances with the most cities that have open defensive slots."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
@@ -2525,12 +2691,12 @@ _HELP_COMMANDS = [
 
 @bot.tree.command(name="help", description="List all available bot commands.")
 async def help_command(interaction: discord.Interaction) -> None:
+    lines = [f"`{name}` — {description}" for name, description in _HELP_COMMANDS]
     embed = discord.Embed(
         title="Available Commands",
+        description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    for name, description in _HELP_COMMANDS:
-        embed.add_field(name=name, value=description, inline=False)
     await interaction.response.send_message(embed=embed)
 
 
