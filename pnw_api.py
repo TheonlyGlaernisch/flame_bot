@@ -587,32 +587,36 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Phase 1 – wars query: collects infra destroyed value, money looted, and
-        war IDs for all qualifying wars.
+        Phase 1 – wars query: collects war IDs and per-war resource-usage totals
+        for all qualifying wars.
 
-        Phase 2 – warattacks query: for each collected war, fetches individual
-        attacks of type ``GROUND`` (regular ground battle) or ``VICTORY`` (beige
-        loot), and parses the ``loot_info`` text to accumulate resource loot
-        totals for each member that was the victor of that specific attack.
+        Phase 2 – warattacks query: iterates every individual attack to build
+        per-attack totals.  ``att_id`` in each WarAttack is the nation that
+        *initiated* that specific exchange (either the war's original attacker or
+        the defender doing a counterattack), so a single loop handles all roles.
+
+        Attack-type breakdown:
+          • infra_destroyed_value  → infra_value   (all types: AIRVINFRA, NAVAL,
+                                                    GROUND, MISSILE, NUKE, VICTORY)
+          • AIRVMONEY money_stolen → infra_value   (money destroyed/dealt, not looted)
+          • GROUND / VICTORY money_stolen → money_looted
+          • GROUND / VICTORY loot_info    → gas/mun/alum/steel looted (resources only)
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
-            "num_cities": int,      # nation's current city count
-            "infra_value": float,   # monetary value of infrastructure destroyed
-                                    #   (att_infra_destroyed_value for offensive wars
-                                    #    + def_infra_destroyed_value for defensive wars)
-            "money_looted": float,  # money looted (att_money_looted for offensive wars
-                                    #   only; defensive wars do not contribute because
-                                    #   def_money_looted is what the enemy took FROM the
-                                    #   defender, not what the defender looted)
-            "gas_looted": float,    # gasoline looted on member victories
-            "mun_looted": float,    # munitions looted on member victories
-            "alum_looted": float,   # aluminum looted on member victories
-            "steel_looted": float,  # steel looted on member victories
-            "def_gas_used": float,  # gasoline the enemy was forced to spend
-            "def_mun_used": float,  # munitions the enemy was forced to spend
-            "def_alum_used": float, # aluminum the enemy was forced to spend
-            "def_steel_used": float,# steel the enemy was forced to spend
+            "num_cities": int,       # nation's current city count
+            "infra_value": float,    # monetary value of all damage dealt:
+                                     #   infra destroyed (all attack types)
+                                     #   + money destroyed via AIRVMONEY
+            "money_looted": float,   # money looted via GROUND / VICTORY attacks
+            "gas_looted": float,     # gasoline looted on member victories
+            "mun_looted": float,     # munitions looted on member victories
+            "alum_looted": float,    # aluminum looted on member victories
+            "steel_looted": float,   # steel looted on member victories
+            "def_gas_used": float,   # gasoline the enemy was forced to spend
+            "def_mun_used": float,   # munitions the enemy was forced to spend
+            "def_alum_used": float,  # aluminum the enemy was forced to spend
+            "def_steel_used": float, # steel the enemy was forced to spend
         }.
         """
         results: dict[int, dict[str, Any]] = {}
@@ -649,8 +653,6 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
-                        att_money_looted
-                        def_money_looted
                         att_gas_used
                         att_mun_used
                         att_alum_used
@@ -712,7 +714,6 @@ class PnWClient:
                         entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["money_looted"] += float(war.get("att_money_looted") or 0)
                         entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
                         entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
@@ -754,17 +755,21 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: collect per-attack infra damage and resource loot.
+        # Phase 2: collect per-attack infra damage, money, and resource loot.
         #
         # att_id in each WarAttack is the nation *initiating* that specific
         # attack (either the war's original attacker or the defender doing a
         # counterattack), so crediting att_id covers ground, air (AIRVINFRA),
         # naval, missile, and nuke damage from both sides equally.
         #
-        # Resource loot (from loot_info) only comes from GROUND and VICTORY
-        # attacks — these are the only attack types that loot city resources
-        # or beige loot.
+        # AIRVINFRA destroys infrastructure (monetary value via
+        # infra_destroyed_value) — it does not steal money.
+        # AIRVMONEY steals money from the defender's treasury — counted as
+        # damage dealt (added to infra_value), not as loot.
+        # GROUND and VICTORY attacks loot resources (loot_info) and money
+        # (money_stolen) — counted as loot.
         # ------------------------------------------------------------------
+        _AIRVMONEY = "AIRVMONEY"
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
         _BATCH = _WARATTACKS_BATCH_SIZE
         for batch_start in range(0, len(war_ids), _BATCH):
@@ -781,6 +786,7 @@ class PnWClient:
                             victor
                             loot_info
                             infra_destroyed_value
+                            money_stolen
                         }
                         paginatorInfo {
                             hasMorePages
@@ -804,24 +810,45 @@ class PnWClient:
                 for attack in attacks:
                     att_id = int(attack.get("att_id") or 0)
                     victor = int(attack.get("victor") or 0)
+                    attack_type = str(attack.get("type") or "")
 
                     # Infra damage: credit the attack initiator (att_id) for
-                    # any infra they destroyed — covers AIRVINFRA, NAVAL,
-                    # GROUND, MISSILE, NUKE, and VICTORY (all attack types).
+                    # infra they destroyed — covers AIRVINFRA, NAVAL, GROUND,
+                    # MISSILE, NUKE, and VICTORY (all attack types).
+                    # AIRVINFRA destroys infra (not money); the monetary value
+                    # is already fully reflected in infra_destroyed_value.
                     infra_val = float(attack.get("infra_destroyed_value") or 0)
                     if infra_val > 0 and att_id in results:
                         results[att_id]["infra_value"] += infra_val
 
-                    # Resource loot: only GROUND and VICTORY carry loot_info.
-                    if str(attack.get("type") or "") not in _LOOT_TYPES:
+                    # AIRVMONEY: money is destroyed/stolen from the defender's
+                    # treasury — counts as damage dealt, not loot.
+                    if attack_type == _AIRVMONEY:
+                        money_stolen = float(attack.get("money_stolen") or 0)
+                        if money_stolen > 0 and att_id in results:
+                            results[att_id]["infra_value"] += money_stolen
                         continue
 
+                    # Resource + money loot: only GROUND and VICTORY carry
+                    # loot_info / money_stolen as actual player loot.
+                    if attack_type not in _LOOT_TYPES:
+                        continue
+
+                    if not victor:
+                        continue  # no victor recorded
+                    if att_id not in results:
+                        continue  # attacker is not one of our tracked members
+                    if victor != att_id:
+                        continue  # attacker lost this exchange — no loot
+
+                    # Money looted (ground pillage or beige loot).
+                    money_stolen = float(attack.get("money_stolen") or 0)
+                    if money_stolen > 0:
+                        results[att_id]["money_looted"] += money_stolen
+
+                    # Resource loot from loot_info text.
                     loot_info = attack.get("loot_info") or ""
-                    if not loot_info or not victor:
-                        continue
-
-                    # Loot only goes to the attacker of the individual attack.
-                    if att_id in results and victor == att_id:
+                    if loot_info:
                         gas, mun, alum, steel = _parse_resource_loot(loot_info)
                         results[att_id]["gas_looted"] += gas
                         results[att_id]["mun_looted"] += mun
@@ -867,7 +894,8 @@ class PnWClient:
         parallel with :meth:`get_alliance_members` without needing the
         member list first.  Nations not present have zero active defensive wars.
         """
-        if not alliance_ids:
+        valid_ids = [aid for aid in alliance_ids if aid]
+        if not valid_ids:
             return {}
         query = """
         query GetActiveDefWars($alliance_id: [Int]) {
@@ -879,9 +907,9 @@ class PnWClient:
             }
         }
         """
-        data = await self._query(query, {"alliance_id": alliance_ids})
+        data = await self._query(query, {"alliance_id": valid_ids})
         wars = data.get("data", {}).get("wars", {}).get("data", [])
-        alliance_id_set = set(alliance_ids)
+        alliance_id_set = set(valid_ids)
         counts: dict[int, int] = {}
         for war in wars:
             if int(war.get("def_alliance_id") or 0) not in alliance_id_set:

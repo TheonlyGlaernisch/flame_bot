@@ -2604,6 +2604,12 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
         )
         return
 
+    if not members:
+        await interaction.followup.send(
+            embed=_info_embed("ℹ️ No active members found for the configured alliance(s).")
+        )
+        return
+
     # Keep only nations that have at least one open defensive slot
     open_slot_nations = [
         (n, war_counts.get(n.nation_id, 0))
