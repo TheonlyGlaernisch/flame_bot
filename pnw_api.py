@@ -70,6 +70,32 @@ class Nation:
 
 
 @dataclass
+class TradePrice:
+    """Current market prices for war-relevant resources."""
+
+    gasoline: float = 0.0
+    munitions: float = 0.0
+    aluminum: float = 0.0
+    steel: float = 0.0
+
+    def resource_value(
+        self,
+        *,
+        gasoline: float = 0.0,
+        munitions: float = 0.0,
+        aluminum: float = 0.0,
+        steel: float = 0.0,
+    ) -> float:
+        """Return the market value of the given resource quantities."""
+        return (
+            gasoline * self.gasoline
+            + munitions * self.munitions
+            + aluminum * self.aluminum
+            + steel * self.steel
+        )
+
+
+@dataclass
 class AllianceInfo:
     """Aggregated statistics for a Politics and War alliance."""
 
@@ -466,6 +492,149 @@ class PnWClient:
         data = await self._query(query, {"alliance_id": alliance_ids})
         nations = data.get("data", {}).get("nations", {}).get("data", [])
         return [self._parse_nation(n) for n in nations]
+
+    async def get_trade_prices(self) -> TradePrice:
+        """Fetch the latest market trade prices for war-relevant resources.
+
+        Returns a :class:`TradePrice` with prices for gasoline, munitions,
+        aluminum, and steel.  Falls back to zeros on any API error.
+        """
+        query = """
+        query GetTradePrices {
+            tradeprices(first: 1) {
+                data {
+                    gasoline
+                    munitions
+                    aluminum
+                    steel
+                }
+            }
+        }
+        """
+        try:
+            data = await self._query(query, {})
+            prices = data.get("data", {}).get("tradeprices", {}).get("data", [])
+            if prices:
+                p = prices[0]
+                return TradePrice(
+                    gasoline=float(p.get("gasoline") or 0),
+                    munitions=float(p.get("munitions") or 0),
+                    aluminum=float(p.get("aluminum") or 0),
+                    steel=float(p.get("steel") or 0),
+                )
+        except Exception:
+            pass
+        return TradePrice()
+
+    async def get_alliance_damage(
+        self,
+        alliance_id: int,
+        after: datetime,
+    ) -> dict[int, dict[str, Any]]:
+        """Return per-nation offensive damage totals for wars started after *after*.
+
+        Only wars where *alliance_id* is the attacker are counted.
+        Returns a dict mapping nation_id -> {
+            "nation_name": str,
+            "num_cities": int,       # attacker's current city count
+            "infra_value": float,    # monetary value of infrastructure destroyed
+            "money_looted": float,   # money looted from the defender
+            "def_gas_used": float,   # gasoline the defender was forced to spend
+            "def_mun_used": float,   # munitions the defender was forced to spend
+            "def_alum_used": float,  # aluminum the defender was forced to spend
+            "def_steel_used": float, # steel the defender was forced to spend
+        }.
+        """
+        results: dict[int, dict[str, Any]] = {}
+        page = 1
+        while True:
+            query = """
+            query GetAllianceWars($alliance_id: [Int], $page: Int) {
+                wars(alliance_id: $alliance_id, page: $page, first: 100) {
+                    data {
+                        att_id
+                        att_alliance_id
+                        date
+                        att_infra_destroyed_value
+                        att_money_looted
+                        def_gas_used
+                        def_mun_used
+                        def_alum_used
+                        def_steel_used
+                        attacker {
+                            nation_name
+                            num_cities
+                        }
+                    }
+                    paginatorInfo {
+                        hasMorePages
+                    }
+                }
+            }
+            """
+            data = await self._query(query, {"alliance_id": [alliance_id], "page": page})
+            payload = data.get("data", {}).get("wars", {})
+            wars = payload.get("data", [])
+            has_more = payload.get("paginatorInfo", {}).get("hasMorePages", False)
+
+            all_before_cutoff = True
+            for war in wars:
+                war_date_str = war.get("date", "") or ""
+                war_date: datetime | None = None
+                if war_date_str:
+                    try:
+                        war_date = datetime.fromisoformat(war_date_str)
+                        if war_date.tzinfo is None:
+                            war_date = war_date.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        pass
+
+                if war_date is not None and war_date >= after:
+                    all_before_cutoff = False
+
+                if int(war.get("att_alliance_id") or 0) != alliance_id:
+                    continue
+                if war_date is None or war_date < after:
+                    continue
+
+                att_id = int(war.get("att_id") or 0)
+                if att_id == 0:
+                    continue
+
+                attacker_data = war.get("attacker") or {}
+                nation_name = attacker_data.get("nation_name") or str(att_id)
+                num_cities = int(attacker_data.get("num_cities") or 0)
+
+                entry = results.setdefault(
+                    att_id,
+                    {
+                        "nation_name": nation_name,
+                        "num_cities": num_cities,
+                        "infra_value": 0.0,
+                        "money_looted": 0.0,
+                        "def_gas_used": 0.0,
+                        "def_mun_used": 0.0,
+                        "def_alum_used": 0.0,
+                        "def_steel_used": 0.0,
+                    },
+                )
+                # Keep the most up-to-date city count seen across wars.
+                if num_cities > entry["num_cities"]:
+                    entry["num_cities"] = num_cities
+                entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
+                entry["money_looted"] += float(war.get("att_money_looted") or 0)
+                entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
+                entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
+                entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
+                entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
+
+            # Stop once there are no more pages or every war on this page predates
+            # the cutoff (the API returns wars in descending date order).
+            if not has_more or all_before_cutoff:
+                break
+            page += 1
+
+        return results
 
     async def get_active_war_counts(self, nation_ids: list[int]) -> dict[int, int]:
         """Return a mapping of nation_id -> active defensive war count.

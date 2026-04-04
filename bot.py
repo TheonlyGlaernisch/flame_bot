@@ -77,6 +77,11 @@ Commands
     Lists any members found on the wrong color together with their
     current color and the expected color.
 
+/damage
+    Show damage dealt by each member of the configured primary alliance
+    over the past 7 days, sorted by total damage (infra destroyed value
+    + money looted) descending.
+
 /send <receiver> [sender] [bank_note] [money] [food] [coal] [oil] [uranium] [iron]
       [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
     Compose a Locutus /transfer resources command for a resource transfer.
@@ -121,6 +126,7 @@ from pnw_api import (
     AllianceInfo,
     Nation,
     PnWClient,
+    TradePrice,
 )
 
 # ---------------------------------------------------------------------------
@@ -1996,6 +2002,158 @@ async def color_check(interaction: discord.Interaction) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /damage  (command group)
+# ---------------------------------------------------------------------------
+
+_DAMAGE_LOOKBACK_DAYS = 7
+
+damage_group = app_commands.Group(
+    name="damage",
+    description="Damage statistics commands.",
+)
+bot.tree.add_command(damage_group)
+
+
+@damage_group.command(
+    name="leaderboard",
+    description="Show damage dealt by each member of the configured alliance in the past week.",
+)
+@app_commands.describe(
+    convert=(
+        "Convert defender resource losses to money using live market prices "
+        "(default: False)."
+    )
+)
+async def damage_command(
+    interaction: discord.Interaction,
+    convert: bool = False,
+) -> None:
+    await interaction.response.defer()
+
+    guild_id = interaction.guild_id or 0
+    alliance_id = bot.db.get_alliance_id(guild_id)
+    if alliance_id is None:
+        await interaction.followup.send(
+            embed=_info_embed(
+                "ℹ️ No primary alliance configured. An admin can use `/admin alliance set` to set one."
+            )
+        )
+        return
+
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_DAMAGE_LOOKBACK_DAYS)
+
+    # Run damage fetch (and optionally trade prices) concurrently.
+    import asyncio
+
+    damage_task = asyncio.ensure_future(bot.pnw.get_alliance_damage(alliance_id, cutoff))
+    prices_task = asyncio.ensure_future(bot.pnw.get_trade_prices()) if convert else None
+
+    try:
+        damage_map = await damage_task
+    except Exception as exc:
+        log.exception("PnW API error while fetching alliance damage")
+        if prices_task is not None:
+            prices_task.cancel()
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    prices: TradePrice | None = None
+    if prices_task is not None:
+        try:
+            prices = await prices_task
+        except Exception:
+            log.exception("PnW API error while fetching trade prices")
+            prices = TradePrice()
+
+    if not damage_map:
+        await interaction.followup.send(
+            embed=_info_embed(
+                "ℹ️ No offensive wars found for the configured alliance in the past week."
+            )
+        )
+        return
+
+    def _total(stats: dict) -> float:
+        base = stats["infra_value"] + stats["money_looted"]
+        if prices is not None:
+            base += prices.resource_value(
+                gasoline=stats["def_gas_used"],
+                munitions=stats["def_mun_used"],
+                aluminum=stats["def_alum_used"],
+                steel=stats["def_steel_used"],
+            )
+        return base
+
+    # Sort nations by total damage descending.
+    sorted_nations = sorted(
+        damage_map.items(),
+        key=lambda item: _total(item[1]),
+        reverse=True,
+    )
+
+    lines: list[str] = []
+    for rank, (nation_id, stats) in enumerate(sorted_nations, start=1):
+        total = _total(stats)
+        name = stats["nation_name"]
+        url = _nation_url(nation_id)
+        cities = stats["num_cities"]
+        per_city = total / cities if cities > 0 else 0.0
+        per_city_str = f"${per_city:,.0f}/city" if cities > 0 else "—"
+        breakdown = f"💥 ${stats['infra_value']:,.0f} + 💰 ${stats['money_looted']:,.0f}"
+        if prices is not None:
+            res_val = prices.resource_value(
+                gasoline=stats["def_gas_used"],
+                munitions=stats["def_mun_used"],
+                aluminum=stats["def_alum_used"],
+                steel=stats["def_steel_used"],
+            )
+            breakdown += f" + 🧪 ${res_val:,.0f}"
+        lines.append(
+            f"{rank}. [{name}]({url}) — **${total:,.0f}** ({per_city_str}) "
+            f"({breakdown})"
+        )
+
+    # Respect Discord's 4096-character description limit.
+    description_lines: list[str] = []
+    char_count = 0
+    truncated_at = 0
+    for i, line in enumerate(lines):
+        if char_count + len(line) + 1 > 4000:
+            truncated_at = len(lines) - i
+            break
+        description_lines.append(line)
+        char_count += len(line) + 1
+
+    description = "\n".join(description_lines)
+    if truncated_at:
+        description += f"\n*… and {truncated_at} more*"
+
+    title = f"⚔️ Damage Dealt — Past {_DAMAGE_LOOKBACK_DAYS} Days"
+    if convert:
+        title += " (market prices)"
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color.red(),
+    )
+    footer_parts = [
+        f"{len(sorted_nations)} member(s) with offensive wars",
+        "💥 = infra destroyed value",
+        "💰 = money looted",
+        "/city = per attacker city",
+    ]
+    if convert:
+        footer_parts.append("🧪 = defender resource losses at market price")
+    embed.set_footer(text=" · ".join(footer_parts))
+    await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
 # /help
 # ---------------------------------------------------------------------------
 
@@ -2020,6 +2178,7 @@ _HELP_COMMANDS = [
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
+    ("/damage leaderboard [convert]", "Show damage dealt by each member of the configured alliance (past 7 days). Use convert:True to include defender resource losses at market prices."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
