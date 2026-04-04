@@ -626,37 +626,38 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Phase 1 – wars query: collects war IDs and per-war totals for infra
-        damage, AIRVMONEY, GROUND money stolen, and enemy resource usage.
+        Follows Locutus's (xdnw/locutus) AttackCost per-attack attribution model:
+        every individual attack is credited to the nation that *initiated* it
+        (``att_id``), whether they are the war's original attacker or a defender
+        doing a counterattack.  This is more accurate than using war-level totals
+        because it avoids counting the enemy's own counterattack resource
+        consumption as "damage we dealt".
 
-        Phase 2 – warattacks query: iterates GROUND and VICTORY attacks only to
-        build per-attack resource loot totals and VICTORY money_stolen.
-        ``att_id`` in each WarAttack is the nation that *initiated* that specific
-        exchange (either the war's original attacker or the defender doing a
-        counterattack), so a single loop handles all roles.
+        Phase 1 – wars query: collects qualifying war IDs and member nation
+        metadata (names, city counts).  No damage totals are read at this level.
 
-        Attack-type breakdown:
-          Phase 1 (war level):
-          • att/def_infra_destroyed_value → infra_value  (all attack types)
-          • att/def_money_looted          → money_looted (GROUND attacks only;
-                                                          does not include VICTORY)
-          Phase 2 (per attack, GROUND + VICTORY only):
-          • VICTORY money_stolen          → money_looted (not in war-level total)
-          • GROUND / VICTORY loot_info    → gas/mun/alum/steel looted
+        Phase 2 – warattacks query: iterates ALL attack types to accumulate
+        per-attack damage for every member who appears as ``att_id``:
+          • att_infra_destroyed_value → infra_value   (all attack types)
+          • money_stolen (victor == att_id) → money_looted (GROUND/AIRVMONEY/VICTORY)
+          • def_gas/mun/alum/steel_used   → def_*_used (enemy cost per exchange,
+                                            excludes enemy's own counterattacks)
+          • loot_info (GROUND / VICTORY)  → gas/mun/alum/steel_looted
+          • loot_info (VICTORY only)      → also vict_*_looted
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
             "num_cities": int,       # nation's current city count
             "infra_value": float,    # monetary value of infrastructure damage dealt
-            "money_looted": float,   # money looted via GROUND / VICTORY attacks
+            "money_looted": float,   # money looted (all attack types)
             "gas_looted": float,     # gasoline looted on member victories
             "mun_looted": float,     # munitions looted on member victories
             "alum_looted": float,    # aluminum looted on member victories
             "steel_looted": float,   # steel looted on member victories
-            "def_gas_used": float,   # gasoline the enemy was forced to spend
-            "def_mun_used": float,   # munitions the enemy was forced to spend
-            "def_alum_used": float,  # aluminum the enemy was forced to spend
-            "def_steel_used": float, # steel the enemy was forced to spend
+            "def_gas_used": float,   # gasoline the enemy spent defending our attacks
+            "def_mun_used": float,   # munitions the enemy spent defending our attacks
+            "def_alum_used": float,  # aluminum the enemy spent defending our attacks
+            "def_steel_used": float, # steel the enemy spent defending our attacks
         }.
         """
         results: dict[int, dict[str, Any]] = {}
@@ -687,7 +688,9 @@ class PnWClient:
             }
 
         # ------------------------------------------------------------------
-        # Phase 1: collect qualifying wars.
+        # Phase 1: collect qualifying war IDs and member nation metadata.
+        # No damage totals are read here; all attribution is done per-attack
+        # in Phase 2 following Locutus's AttackCost model.
         # ------------------------------------------------------------------
         page = 1
         while True:
@@ -701,18 +704,6 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
-                        att_infra_destroyed_value
-                        def_infra_destroyed_value
-                        att_money_looted
-                        def_money_looted
-                        att_gas_used
-                        att_mun_used
-                        att_alum_used
-                        att_steel_used
-                        def_gas_used
-                        def_mun_used
-                        def_alum_used
-                        def_steel_used
                         attacker {
                             nation_name
                             num_cities
@@ -755,7 +746,7 @@ class PnWClient:
                 att_alliance = int(war.get("att_alliance_id") or 0)
                 def_alliance = int(war.get("def_alliance_id") or 0)
 
-                # ---- Offensive contribution (our member is the attacker) ----
+                # ---- Offensive contribution (our member is the war's attacker) ----
                 if att_alliance == alliance_id:
                     att_id = int(war.get("att_id") or 0)
                     if att_id:
@@ -766,17 +757,11 @@ class PnWClient:
                         entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("att_money_looted") or 0)
-                        entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
-                        entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
-                        entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
-                        entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
 
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
 
-                # ---- Defensive contribution (our member is the defender) ----
+                # ---- Defensive contribution (our member is the war's defender) ----
                 # Skip intra-alliance wars to avoid double-counting.
                 if def_alliance == alliance_id and att_alliance != alliance_id:
                     def_id = int(war.get("def_id") or 0)
@@ -788,13 +773,6 @@ class PnWClient:
                         entry = results.setdefault(def_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("def_money_looted") or 0)
-                        # Resources the enemy attacker was forced to spend.
-                        entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
-                        entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
-                        entry["def_alum_used"] += float(war.get("att_alum_used") or 0)
-                        entry["def_steel_used"] += float(war.get("att_steel_used") or 0)
 
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
@@ -809,19 +787,21 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: per-attack resource loot and VICTORY money.
+        # Phase 2: per-attack attribution (Locutus AttackCost model).
         #
-        # Infra damage, AIRVMONEY, and GROUND money_stolen are all covered by
-        # war-level fields fetched in Phase 1.  Phase 2 only needs to handle:
-        #   • VICTORY money_stolen  — not included in war-level money_stolen
-        #   • GROUND / VICTORY loot_info — per-city resource loot, no war-level field
-        #
-        # att_id in each WarAttack is the nation *initiating* that specific
-        # attack (either the war's original attacker or the defender doing a
-        # counterattack), so crediting att_id covers both roles.
+        # Every attack type is processed.  For each attack initiated by one of
+        # our members (att_id in results) we credit:
+        #   • att_infra_destroyed_value — infra damage dealt this exchange
+        #   • money_stolen (when victor == att_id) — money from all types
+        #     (GROUND, AIRVMONEY, VICTORY) rather than relying on war totals
+        #   • def_gas/mun/alum/steel_used — resources the enemy spent
+        #     defending against THIS specific attack only (more accurate than
+        #     war-level totals, which also include the enemy's own counterattack
+        #     consumption)
+        # Resource loot (loot_info) is parsed only for GROUND and VICTORY.
         # ------------------------------------------------------------------
         _VICTORY = "VICTORY"
-        _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
+        _RESOURCE_LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT  # {"GROUND", "VICTORY"}
         _BATCH = _WARATTACKS_BATCH_SIZE
         for batch_start in range(0, len(war_ids), _BATCH):
             batch = war_ids[batch_start : batch_start + _BATCH]
@@ -834,8 +814,13 @@ class PnWClient:
                             att_id
                             type
                             victor
-                            loot_info
                             money_stolen
+                            loot_info
+                            att_infra_destroyed_value
+                            def_gas_used
+                            def_mun_used
+                            def_alum_used
+                            def_steel_used
                         }
                         paginatorInfo {
                             hasMorePages
@@ -848,7 +833,7 @@ class PnWClient:
                         atk_query, {"war_id": batch, "page": atk_page}
                     )
                 except Exception:
-                    log.exception("PnW API error fetching warattacks for resource loot")
+                    log.exception("PnW API error fetching warattacks")
                     break
                 atk_payload = atk_data.get("data", {}).get("warattacks", {})
                 attacks = atk_payload.get("data", [])
@@ -859,40 +844,54 @@ class PnWClient:
                 for attack in attacks:
                     att_id = int(attack.get("att_id") or 0)
                     if att_id not in results:
-                        continue
+                        continue  # Not one of our members
 
                     attack_type = str(attack.get("type") or "")
-                    if attack_type not in _LOOT_TYPES:
-                        continue
-
                     victor = int(attack.get("victor") or 0)
-                    if not victor or victor != att_id:
-                        continue  # attacker lost this exchange — no loot
 
-                    # VICTORY money_stolen is not reflected in war-level money_stolen.
-                    if attack_type == _VICTORY:
-                        money_stolen = float(attack.get("money_stolen") or 0)
-                        if money_stolen > 0:
-                            results[att_id]["money_looted"] += money_stolen
+                    # Infra damage dealt by our member in this exchange.
+                    # (Locutus: attack.getInfra_destroyed_value() → infrn2)
+                    infra_val = float(attack.get("att_infra_destroyed_value") or 0)
+                    if infra_val > 0:
+                        results[att_id]["infra_value"] += infra_val
 
-                    # Resource loot from loot_info text (GROUND and VICTORY).
-                    loot_info = attack.get("loot_info") or ""
-                    if loot_info:
-                        gas, mun, alum, steel = _parse_resource_loot(loot_info)
-                        results[att_id]["gas_looted"] += gas
-                        results[att_id]["mun_looted"] += mun
-                        results[att_id]["alum_looted"] += alum
-                        results[att_id]["steel_looted"] += steel
+                    # Money looted — covers GROUND, AIRVMONEY, and VICTORY in
+                    # a single pass (Locutus: attack.addAttLoot(loot1)).
+                    if victor == att_id:
+                        money = float(attack.get("money_stolen") or 0)
+                        if money > 0:
+                            results[att_id]["money_looted"] += money
 
-                        # VICTORY loot also counts as resource damage dealt:
-                        # the enemy's stockpile is permanently reduced by the
-                        # looted amount, so track it separately for the
-                        # res-damage column as well as the loot column.
-                        if attack_type == _VICTORY:
-                            results[att_id]["vict_gas_looted"] += gas
-                            results[att_id]["vict_mun_looted"] += mun
-                            results[att_id]["vict_alum_looted"] += alum
-                            results[att_id]["vict_steel_looted"] += steel
+                    # Enemy resource consumption when defending against THIS
+                    # attack only.  Using per-attack values rather than war-level
+                    # totals prevents the enemy's own counterattack consumption
+                    # from being counted as damage we dealt.
+                    # (Locutus: attack.addDefConsumption(consumption2))
+                    results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
+                    results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
+                    results[att_id]["def_alum_used"] += float(attack.get("def_alum_used") or 0)
+                    results[att_id]["def_steel_used"] += float(attack.get("def_steel_used") or 0)
+
+                    # Resource loot from loot_info text (GROUND and VICTORY only).
+                    if attack_type in _RESOURCE_LOOT_TYPES and victor == att_id:
+                        loot_info = attack.get("loot_info") or ""
+                        if loot_info:
+                            gas, mun, alum, steel = _parse_resource_loot(loot_info)
+                            results[att_id]["gas_looted"] += gas
+                            results[att_id]["mun_looted"] += mun
+                            results[att_id]["alum_looted"] += alum
+                            results[att_id]["steel_looted"] += steel
+
+                            # VICTORY loot also counts as resource damage dealt:
+                            # the enemy's stockpile is permanently reduced by the
+                            # looted amount, so track it separately for the
+                            # res-damage column as well as the loot column.
+                            # (Locutus: addDefLoot(loot2) on VICTORY)
+                            if attack_type == _VICTORY:
+                                results[att_id]["vict_gas_looted"] += gas
+                                results[att_id]["vict_mun_looted"] += mun
+                                results[att_id]["vict_alum_looted"] += alum
+                                results[att_id]["vict_steel_looted"] += steel
 
                 if not atk_has_more:
                     break
