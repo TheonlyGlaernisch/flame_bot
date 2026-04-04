@@ -132,6 +132,7 @@ _NATION_FIELDS = """
     surveillance_network
     nuclear_launch_facility
     activity_center
+    military_research_center
     alliance_id
     alliance_position
     alliance_seniority
@@ -174,6 +175,7 @@ _PROJECT_ABBREVS: dict[str, str] = {
     "surveillance_network": "SN",
     "nuclear_launch_facility": "NLF",
     "activity_center": "AC",
+    "military_research_center": "MRC",
 }
 
 _ALLIANCE_MEMBER_FIELDS = """

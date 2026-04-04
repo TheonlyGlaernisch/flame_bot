@@ -14,6 +14,7 @@ class Database:
         self._col.create_index("discord_id", unique=True)
         self._col.create_index("nation_id", unique=True)
         self._guild_config = self._client["TRF"]["guild_config"]
+        self._bot_config = self._client["TRF"]["bot_config"]
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -74,7 +75,7 @@ class Database:
 
     # Gov-role config helpers ---------------------------------------------------
 
-    _GOV_ROLE_KEYS = ("leader", "econ", "milcom", "ia", "gov")
+    _GOV_ROLE_KEYS = ("leader", "2ic", "econ", "econ_gov", "milcom", "milcom_gov", "ia", "ia_asst", "gov")
 
     def get_gov_roles(self, guild_id: int) -> dict[str, int | None]:
         """Return the Discord role IDs configured for each gov department, or None if unset."""
@@ -123,5 +124,20 @@ class Database:
         self._guild_config.update_one(
             {"guild_id": str(guild_id)},
             {"$set": {"guild_id": str(guild_id), "alliance_id": alliance_id}},
+            upsert=True,
+        )
+
+    # Bot-level config helpers -----------------------------------------------
+
+    def get_pnw_api_key(self) -> str | None:
+        """Return the overridden PnW API key stored in the database, or None if not set."""
+        doc = self._bot_config.find_one({"key": "pnw_api_key"}, {"_id": 0})
+        return doc.get("value") if doc else None
+
+    def set_pnw_api_key(self, api_key: str) -> None:
+        """Store an override for the PnW API key."""
+        self._bot_config.update_one(
+            {"key": "pnw_api_key"},
+            {"$set": {"key": "pnw_api_key", "value": api_key}},
             upsert=True,
         )
