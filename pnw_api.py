@@ -89,6 +89,8 @@ class Nation:
     ships: int = 0
     missiles: int = 0
     nukes: int = 0
+    # Spy count — null for foreign nations (API restriction); -1 means unknown
+    spies: int = -1
     # National projects — list of short abbreviations for built projects
     projects_built: list[str] = field(default_factory=list)
 
@@ -174,6 +176,7 @@ _NATION_FIELDS = """
     ships
     missiles
     nukes
+    spies
     iron_works
     bauxite_works
     arms_stockpile
@@ -356,6 +359,7 @@ class PnWClient:
             ships=int(n.get("ships") or 0),
             missiles=int(n.get("missiles") or 0),
             nukes=int(n.get("nukes") or 0),
+            spies=-1 if n.get("spies") is None else int(n["spies"]),
             projects_built=projects_built,
             alliance_id=int(n.get("alliance_id") or 0),
             alliance_name=alliance.get("name", "") or "",
@@ -645,8 +649,6 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
-                        att_infra_destroyed_value
-                        def_infra_destroyed_value
                         att_money_looted
                         def_money_looted
                         att_gas_used
@@ -710,7 +712,6 @@ class PnWClient:
                         entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
                         entry["money_looted"] += float(war.get("att_money_looted") or 0)
                         entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
@@ -732,7 +733,6 @@ class PnWClient:
                         entry = results.setdefault(def_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
                         # def_money_looted is money the ATTACKER looted FROM the defender
                         # (loot the defender lost, not gained), so we do not credit it here.
                         # Resources the enemy attacker was forced to spend.
@@ -754,11 +754,16 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: collect resource loot from individual attack records.
-        # We look for GROUND attacks (per-city loot on a ground battle win)
-        # and VICTORY attacks (beige loot when resistance hits 0).
-        # Loot only goes to the attacker of each individual attack — only
-        # offensive attacks (victor == att_id) yield loot.
+        # Phase 2: collect per-attack infra damage and resource loot.
+        #
+        # att_id in each WarAttack is the nation *initiating* that specific
+        # attack (either the war's original attacker or the defender doing a
+        # counterattack), so crediting att_id covers ground, air (AIRVINFRA),
+        # naval, missile, and nuke damage from both sides equally.
+        #
+        # Resource loot (from loot_info) only comes from GROUND and VICTORY
+        # attacks — these are the only attack types that loot city resources
+        # or beige loot.
         # ------------------------------------------------------------------
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
         _BATCH = _WARATTACKS_BATCH_SIZE
@@ -775,6 +780,7 @@ class PnWClient:
                             type
                             victor
                             loot_info
+                            infra_destroyed_value
                         }
                         paginatorInfo {
                             hasMorePages
@@ -796,16 +802,23 @@ class PnWClient:
                 )
 
                 for attack in attacks:
-                    # Only process GROUND and VICTORY attack types.
+                    att_id = int(attack.get("att_id") or 0)
+                    victor = int(attack.get("victor") or 0)
+
+                    # Infra damage: credit the attack initiator (att_id) for
+                    # any infra they destroyed — covers AIRVINFRA, NAVAL,
+                    # GROUND, MISSILE, NUKE, and VICTORY (all attack types).
+                    infra_val = float(attack.get("infra_destroyed_value") or 0)
+                    if infra_val > 0 and att_id in results:
+                        results[att_id]["infra_value"] += infra_val
+
+                    # Resource loot: only GROUND and VICTORY carry loot_info.
                     if str(attack.get("type") or "") not in _LOOT_TYPES:
                         continue
 
-                    victor = int(attack.get("victor") or 0)
                     loot_info = attack.get("loot_info") or ""
                     if not loot_info or not victor:
                         continue
-
-                    att_id = int(attack.get("att_id") or 0)
 
                     # Loot only goes to the attacker of the individual attack.
                     if att_id in results and victor == att_id:
@@ -843,6 +856,39 @@ class PnWClient:
         for war in wars:
             def_id = int(war["def_id"])
             counts[def_id] = counts.get(def_id, 0) + 1
+        return counts
+
+    async def get_active_def_war_counts_by_alliance(
+        self, alliance_ids: list[int]
+    ) -> dict[int, int]:
+        """Return a mapping of nation_id -> active defensive war count.
+
+        Queries by alliance ID instead of nation IDs, so it can run in
+        parallel with :meth:`get_alliance_members` without needing the
+        member list first.  Nations not present have zero active defensive wars.
+        """
+        if not alliance_ids:
+            return {}
+        query = """
+        query GetActiveDefWars($alliance_id: [Int]) {
+            wars(alliance_id: $alliance_id, active: true, first: 500) {
+                data {
+                    def_id
+                    def_alliance_id
+                }
+            }
+        }
+        """
+        data = await self._query(query, {"alliance_id": alliance_ids})
+        wars = data.get("data", {}).get("wars", {}).get("data", [])
+        alliance_id_set = set(alliance_ids)
+        counts: dict[int, int] = {}
+        for war in wars:
+            if int(war.get("def_alliance_id") or 0) not in alliance_id_set:
+                continue
+            def_id = int(war.get("def_id") or 0)
+            if def_id:
+                counts[def_id] = counts.get(def_id, 0) + 1
         return counts
 
     async def get_alliance_by_id(self, alliance_id: int) -> Optional[AllianceInfo]:
