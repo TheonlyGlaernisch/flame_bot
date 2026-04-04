@@ -599,9 +599,7 @@ class PnWClient:
         Attack-type breakdown:
           Phase 1 (war level):
           • att/def_infra_destroyed_value → infra_value  (all attack types)
-          • att/def_money_destroyed       → infra_value  (AIRVMONEY; money
-                                                          destroyed, not looted)
-          • att/def_money_stolen          → money_looted (GROUND attacks only;
+          • att/def_money_looted          → money_looted (GROUND attacks only;
                                                           does not include VICTORY)
           Phase 2 (per attack, GROUND + VICTORY only):
           • VICTORY money_stolen          → money_looted (not in war-level total)
@@ -610,9 +608,7 @@ class PnWClient:
         Returns a dict mapping nation_id -> {
             "nation_name": str,
             "num_cities": int,       # nation's current city count
-            "infra_value": float,    # monetary value of all damage dealt:
-                                     #   infra destroyed (all attack types)
-                                     #   + money destroyed via AIRVMONEY
+            "infra_value": float,    # monetary value of infrastructure damage dealt
             "money_looted": float,   # money looted via GROUND / VICTORY attacks
             "gas_looted": float,     # gasoline looted on member victories
             "mun_looted": float,     # munitions looted on member victories
@@ -660,10 +656,8 @@ class PnWClient:
                         date
                         att_infra_destroyed_value
                         def_infra_destroyed_value
-                        att_money_destroyed
-                        def_money_destroyed
-                        att_money_stolen
-                        def_money_stolen
+                        att_money_looted
+                        def_money_looted
                         att_gas_used
                         att_mun_used
                         att_alum_used
@@ -726,8 +720,7 @@ class PnWClient:
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
                         entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
-                        entry["infra_value"] += float(war.get("att_money_destroyed") or 0)
-                        entry["money_looted"] += float(war.get("att_money_stolen") or 0)
+                        entry["money_looted"] += float(war.get("att_money_looted") or 0)
                         entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
                         entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
@@ -749,8 +742,7 @@ class PnWClient:
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
                         entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
-                        entry["infra_value"] += float(war.get("def_money_destroyed") or 0)
-                        entry["money_looted"] += float(war.get("def_money_stolen") or 0)
+                        entry["money_looted"] += float(war.get("def_money_looted") or 0)
                         # Resources the enemy attacker was forced to spend.
                         entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
                         entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
