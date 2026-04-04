@@ -33,9 +33,6 @@ Commands
 /test alliance info <query>
     Same as /alliance info but queries the PnW test API.
 
-/who <query>
-    Alias for /whois.  Identical behaviour.
-
 /config slots set <alliance_ids>
     (Admin or Milcom only) Set the alliance IDs monitored by /slots.
 
@@ -90,7 +87,8 @@ Commands
 /request grant <note> [money] [food] [coal] [oil] [uranium] [iron]
                [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
     Request a grant from the Economics team.
-    Posts an embed in the configured grant channel and pings the econ role.
+    Posts an embed in the configured grant channel and pings the econ gov role
+    if configured, otherwise falls back to pinging the econ role.
     note is used as the reason displayed in the embed and as the bank_note
     in the Locutus command (# prepended automatically if missing).
     Requires both a grant channel and an econ role to be configured via
@@ -689,20 +687,6 @@ async def _handle_whois(
     )
 )
 async def whois(interaction: discord.Interaction, query: str) -> None:
-    await interaction.response.defer()
-    await _handle_whois(interaction, bot.pnw, query)
-
-
-@bot.tree.command(
-    name="who",
-    description="Look up a PnW nation by ID, nation name, or @mention / Discord username.",
-)
-@app_commands.describe(
-    query=(
-        "A nation ID, an @mention, a nation name, or a Discord username."
-    )
-)
-async def who(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_whois(interaction, bot.pnw, query)
 
@@ -1669,7 +1653,9 @@ async def request_grant(
 
     # Check that both the grant channel and the econ role are configured.
     grant_channel_id = bot.db.get_grant_channel(guild_id)
-    econ_role_id = bot.db.get_gov_roles(guild_id).get("econ")
+    gov_roles = bot.db.get_gov_roles(guild_id)
+    econ_gov_role_id = gov_roles.get("econ_gov")
+    econ_role_id = gov_roles.get("econ")
 
     missing: list[str] = []
     if not grant_channel_id:
@@ -1746,7 +1732,8 @@ async def request_grant(
     embed.add_field(name="Resources", value="\n".join(res_lines), inline=False)
     embed.add_field(name="Locutus Command", value=f"```{locutus_cmd}```", inline=False)
 
-    econ_mention = f"<@&{econ_role_id}>"
+    ping_role_id = econ_gov_role_id if econ_gov_role_id else econ_role_id
+    econ_mention = f"<@&{ping_role_id}>"
     await grant_channel.send(content=econ_mention, embed=embed)
     log.info(
         "Guild %d: grant request posted by %s to #%s",
@@ -1874,6 +1861,44 @@ async def admin_api_key_set_error(
 
 
 # ---------------------------------------------------------------------------
+# /admin clear_guild_commands
+# ---------------------------------------------------------------------------
+
+
+@admin_group.command(
+    name="clear_guild_commands",
+    description="Clear all guild-scoped slash commands to remove duplicates (admin only).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_clear_guild_commands(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("❌ This command must be used inside a server.", ephemeral=True)
+        return
+    bot.tree.clear_commands(guild=guild)
+    await bot.tree.sync(guild=guild)
+    log.info("Guild %d: guild-scoped slash commands cleared by %s", guild.id, interaction.user)
+    await interaction.followup.send(
+        "✅ Guild-specific slash commands cleared. Duplicates should be gone within a few seconds.",
+        ephemeral=True,
+    )
+
+
+@admin_clear_guild_commands.error
+async def admin_clear_guild_commands_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
 # /color check
 # ---------------------------------------------------------------------------
 
@@ -1978,7 +2003,6 @@ _HELP_COMMANDS = [
     ("/register <nation_id>", "Link your Discord account to a PnW nation."),
     ("/unregister", "Remove your PnW nation registration."),
     ("/whois <query>", "Look up a nation by ID, name, or @mention."),
-    ("/who <query>", "Alias for /whois."),
     ("/alliance info <query>", "Look up an alliance by ID or name."),
     ("/alliance members <query>", "List members of an alliance (10 per page)."),
     ("/test whois <query>", "Look up a nation via the PnW test API."),
@@ -1994,9 +2018,10 @@ _HELP_COMMANDS = [
     ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
+    ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
-    ("/request grant <note> [resources]", "Request a grant from the Economics team."),
+    ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
 ]
 
