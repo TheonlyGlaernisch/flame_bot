@@ -773,7 +773,7 @@ class PnWClient:
                         entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
                         entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
 
-                        if war_id:
+                        if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
 
                 # ---- Defensive contribution (our member is the defender) ----
