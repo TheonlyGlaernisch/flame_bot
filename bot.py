@@ -2525,12 +2525,12 @@ _HELP_COMMANDS = [
 
 @bot.tree.command(name="help", description="List all available bot commands.")
 async def help_command(interaction: discord.Interaction) -> None:
+    lines = [f"`{name}` — {description}" for name, description in _HELP_COMMANDS]
     embed = discord.Embed(
         title="Available Commands",
+        description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    for name, description in _HELP_COMMANDS:
-        embed.add_field(name=name, value=description, inline=False)
     await interaction.response.send_message(embed=embed)
 
 
