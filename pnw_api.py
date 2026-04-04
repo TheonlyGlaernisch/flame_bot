@@ -18,11 +18,20 @@ log = logging.getLogger(__name__)
 # PnW loot_info is a human-readable string like:
 #   "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel…"
 # We extract the four war-relevant manufactured resources using case-insensitive
-# patterns that tolerate comma-formatted numbers (e.g. "1,234").
-_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+gasoline", re.IGNORECASE)
-_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+munitions", re.IGNORECASE)
-_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+aluminum", re.IGNORECASE)
-_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+steel", re.IGNORECASE)
+# patterns that tolerate comma-formatted numbers (e.g. "1,234") with up to two
+# decimal places.
+_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+gasoline", re.IGNORECASE)
+_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+munitions", re.IGNORECASE)
+_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+aluminum", re.IGNORECASE)
+_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+steel", re.IGNORECASE)
+
+# Attack types that yield resource loot when the attacker wins.
+# GROUND: per-city loot on a successful ground battle.
+# VICTORY: beige loot when the defender's resistance reaches 0.
+_ATTACK_TYPES_WITH_LOOT: frozenset[str] = frozenset({"GROUND", "VICTORY"})
+
+# Number of war IDs to include per warattacks API request.
+_WARATTACKS_BATCH_SIZE = 50
 
 
 def _parse_resource_loot(loot_info: str) -> tuple[float, float, float, float]:
@@ -692,8 +701,8 @@ class PnWClient:
         # In both cases the winner is identified by victor == att_id (nation
         # ID of the attacking nation for that specific attack).
         # ------------------------------------------------------------------
-        _LOOT_TYPES = {"GROUND", "VICTORY"}
-        _BATCH = 50
+        _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
+        _BATCH = _WARATTACKS_BATCH_SIZE
         for batch_start in range(0, len(war_ids), _BATCH):
             batch = war_ids[batch_start : batch_start + _BATCH]
             atk_page = 1
