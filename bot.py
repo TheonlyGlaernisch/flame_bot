@@ -2049,9 +2049,9 @@ _LEADERBOARD_PAGE_SIZE = 10
 # Sort-mode keys and their display labels (button text).
 _LEADERBOARD_SORT_LABELS: dict[str, str] = {
     "loot":      "💰 Loot",
-    "loot_city": "💰 /City",
-    "infra":     "💥 Infra",
-    "res_dmg":   "⚔️ Res Dmg",
+    "dmg_city":  "💥 /City",
+    "infra":     "🏗️ Infra",
+    "res_dmg":   "💥 Res Dmg",
 }
 
 
@@ -2102,9 +2102,9 @@ def _build_leaderboard_page(
         )
         city_str = f" · {cities}🏙️" if cities > 0 else ""
         stats = "  ".join([
-            _lb_stat(infra,   "💥", cities, sort_mode == "infra"),
-            _lb_stat(res_dmg, "⚔️", cities, sort_mode == "res_dmg"),
-            _lb_stat(loot,    "💰", cities, sort_mode in ("loot", "loot_city")),
+            _lb_stat(infra,   "🏗️", cities, sort_mode in ("infra", "dmg_city")),
+            _lb_stat(res_dmg, "💥", cities, sort_mode in ("res_dmg", "dmg_city")),
+            _lb_stat(loot,    "💰", cities, sort_mode == "loot"),
         ])
         lines.append(
             f"**{rank}.** [{s['nation_name']}]({_nation_url(nation_id)}){city_str}\n{stats}"
@@ -2115,7 +2115,7 @@ def _build_leaderboard_page(
     if total_pages > 1:
         footer_parts.append(f"Page {page + 1}/{total_pages}")
     footer_parts.append(f"{len(sorted_nations)} members")
-    footer_parts.append("💥 infra  ⚔️ res dmg  💰 loot  (/c = per city)")
+    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot  (/c = per city)")
 
     embed = discord.Embed(
         title=f"⚔️ War Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
@@ -2175,8 +2175,8 @@ class LeaderboardView(discord.ui.View):
         cities = max(s["num_cities"], 1)
         if self.sort_mode == "loot":
             return self._loot(s)
-        if self.sort_mode == "loot_city":
-            return self._loot(s) / cities
+        if self.sort_mode == "dmg_city":
+            return (s["infra_value"] + self._res_dmg(s)) / cities
         if self.sort_mode == "infra":
             return s["infra_value"]
         if self.sort_mode == "res_dmg":
