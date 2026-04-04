@@ -2089,10 +2089,10 @@ def _build_leaderboard_page(
         cities = s["num_cities"]
         infra = s["infra_value"]
         res_dmg = prices.resource_value(
-            gasoline=s["def_gas_used"],
-            munitions=s["def_mun_used"],
-            aluminum=s["def_alum_used"],
-            steel=s["def_steel_used"],
+            gasoline=s["def_gas_used"] + s["vict_gas_looted"],
+            munitions=s["def_mun_used"] + s["vict_mun_looted"],
+            aluminum=s["def_alum_used"] + s["vict_alum_looted"],
+            steel=s["def_steel_used"] + s["vict_steel_looted"],
         )
         loot = s["money_looted"] + prices.resource_value(
             gasoline=s["gas_looted"],
@@ -2115,7 +2115,7 @@ def _build_leaderboard_page(
     if total_pages > 1:
         footer_parts.append(f"Page {page + 1}/{total_pages}")
     footer_parts.append(f"{len(sorted_nations)} members")
-    footer_parts.append("🏗️ infra  💥 res dmg  💰 loot (money + looted res @ mkt)  (/c = per city)")
+    footer_parts.append("🏗️ infra  💥 res dmg (enemy res used + victory loot @ mkt)  💰 loot (money + looted res @ mkt)  (/c = per city)")
 
     embed = discord.Embed(
         title=f"⚔️ War Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
@@ -2160,14 +2160,14 @@ class LeaderboardView(discord.ui.View):
             munitions=s["mun_looted"],
             aluminum=s["alum_looted"],
             steel=s["steel_looted"],
-        ) + self._res_dmg(s)
+        )
 
     def _res_dmg(self, s: dict) -> float:
         return self._prices.resource_value(
-            gasoline=s["def_gas_used"],
-            munitions=s["def_mun_used"],
-            aluminum=s["def_alum_used"],
-            steel=s["def_steel_used"],
+            gasoline=s["def_gas_used"] + s["vict_gas_looted"],
+            munitions=s["def_mun_used"] + s["vict_mun_looted"],
+            aluminum=s["def_alum_used"] + s["vict_alum_looted"],
+            steel=s["def_steel_used"] + s["vict_steel_looted"],
         )
 
     def _sort_key(self, item: tuple[int, dict]) -> float:
