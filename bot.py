@@ -361,10 +361,8 @@ class FlameBot(discord.Client):
         self._api_runner: web.AppRunner | None = None
 
     async def setup_hook(self) -> None:
-        guild = discord.Object(id=config.GUILD_ID)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
-        log.info("Slash commands synced to guild %d.", config.GUILD_ID)
+        await self.tree.sync()
+        log.info("Slash commands synced globally.")
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%d)", self.user, self.user.id)
@@ -373,7 +371,7 @@ class FlameBot(discord.Client):
 
     async def _start_api(self) -> None:
         app = create_app(
-            guild_getter=lambda: self.get_guild(config.GUILD_ID),
+            guild_getter=lambda: self.get_guild(config.GUILD_ID) if config.GUILD_ID else None,
             api_key=config.API_KEY,  # type: ignore[arg-type]
             role_config=RoleConfig(
                 verified_role_id=config.VERIFIED_ROLE_ID,
