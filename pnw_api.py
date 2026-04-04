@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -116,6 +117,10 @@ class Nation:
     # Turns remaining on beige (0 = not beiged); populated by GraphQL path
     beige_turns: int = 0
 
+    # Extended fields populated by get_nation_with_cities()
+    population: int = 0
+    domestic_policy: str = ""
+
 
 @dataclass
 class TradePrice:
@@ -160,6 +165,78 @@ class AllianceInfo:
     total_cities: int   # sum of cities across active members
     avg_cities: float
     rank: int = 0
+
+
+@dataclass
+class City:
+    """All per-city improvement data fetched for revenue calculations."""
+
+    city_id: int
+    infrastructure: float = 0.0
+    land: float = 0.0
+    powered: bool = True
+    # Power plants
+    coal_power: int = 0
+    oil_power: int = 0
+    nuclear_power: int = 0
+    wind_power: int = 0
+    # Raw resource improvements
+    coal_mine: int = 0
+    oil_well: int = 0
+    uranium_mine: int = 0
+    iron_mine: int = 0
+    bauxite_mine: int = 0
+    lead_mine: int = 0
+    farm: int = 0
+    # Commerce improvements
+    supermarket: int = 0
+    bank: int = 0
+    shopping_mall: int = 0
+    stadium: int = 0
+    subway: int = 0
+    # Manufacturing improvements
+    gasrefinery: int = 0      # produces gasoline
+    aluminum_refinery: int = 0
+    steel_mill: int = 0
+    munitions_factory: int = 0
+
+
+@dataclass
+class GameInfo:
+    """Live game metadata relevant to revenue and city-cost calculations."""
+
+    city_average: float = 43.6   # average city count of top nations (dynamic)
+    game_month: int = 6           # 1–12; used for seasonal food modifiers
+    global_radiation: float = 0.0
+    # Two-letter continent code (upper) → radiation level
+    continent_radiation: dict[str, float] = field(default_factory=dict)
+
+    def radiation_for(self, continent: str) -> float:
+        return self.continent_radiation.get(continent.upper(), 0.0)
+
+
+@dataclass
+class NationRevenue:
+    """Estimated gross daily revenue for a nation (all resources per day)."""
+
+    money: float = 0.0
+    food_production: float = 0.0
+    food_consumption: float = 0.0
+    coal: float = 0.0
+    oil: float = 0.0
+    uranium: float = 0.0
+    iron: float = 0.0
+    bauxite: float = 0.0
+    lead: float = 0.0
+    gasoline: float = 0.0
+    munitions: float = 0.0
+    steel: float = 0.0
+    aluminum: float = 0.0
+    avg_commerce: float = 0.0    # average commerce % across all cities
+
+    @property
+    def food(self) -> float:
+        return self.food_production - self.food_consumption
 
 
 _NATION_FIELDS = """
@@ -216,6 +293,33 @@ _NATION_FIELDS = """
     alliance {
         name
     }
+"""
+
+_CITY_FIELDS = """
+    id
+    infrastructure
+    land
+    powered
+    coal_power
+    oil_power
+    nuclear_power
+    wind_power
+    coal_mine
+    oil_well
+    uranium_mine
+    iron_mine
+    bauxite_mine
+    lead_mine
+    farm
+    supermarket
+    bank
+    shopping_mall
+    stadium
+    subway
+    gasrefinery
+    aluminum_refinery
+    steel_mill
+    munitions_factory
 """
 
 # Mapping of GraphQL field name → short abbreviation shown in /whois.
@@ -395,6 +499,35 @@ class PnWClient:
             avg_cities=avg_cities,
         )
 
+    @staticmethod
+    def _parse_city(c: dict[str, Any]) -> City:
+        return City(
+            city_id=int(c.get("id") or 0),
+            infrastructure=float(c.get("infrastructure") or 0.0),
+            land=float(c.get("land") or 0.0),
+            powered=bool(c.get("powered", True)),
+            coal_power=int(c.get("coal_power") or 0),
+            oil_power=int(c.get("oil_power") or 0),
+            nuclear_power=int(c.get("nuclear_power") or 0),
+            wind_power=int(c.get("wind_power") or 0),
+            coal_mine=int(c.get("coal_mine") or 0),
+            oil_well=int(c.get("oil_well") or 0),
+            uranium_mine=int(c.get("uranium_mine") or 0),
+            iron_mine=int(c.get("iron_mine") or 0),
+            bauxite_mine=int(c.get("bauxite_mine") or 0),
+            lead_mine=int(c.get("lead_mine") or 0),
+            farm=int(c.get("farm") or 0),
+            supermarket=int(c.get("supermarket") or 0),
+            bank=int(c.get("bank") or 0),
+            shopping_mall=int(c.get("shopping_mall") or 0),
+            stadium=int(c.get("stadium") or 0),
+            subway=int(c.get("subway") or 0),
+            gasrefinery=int(c.get("gasrefinery") or 0),
+            aluminum_refinery=int(c.get("aluminum_refinery") or 0),
+            steel_mill=int(c.get("steel_mill") or 0),
+            munitions_factory=int(c.get("munitions_factory") or 0),
+        )
+
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
@@ -543,7 +676,110 @@ class PnWClient:
         nations = data.get("data", {}).get("nations", {}).get("data", [])
         return [self._parse_nation(n) for n in nations]
 
-    async def get_trade_prices(self) -> TradePrice:
+    async def get_nation_with_cities(
+        self, nation_id: int
+    ) -> Optional[tuple[Nation, list[City]]]:
+        """Fetch a nation and all its city data for revenue calculations.
+
+        Returns ``(nation, cities)`` or ``None`` if the nation is not found.
+        Only supported in GraphQL mode; returns ``None`` in REST mode.
+        """
+        if self._rest_url is not None:
+            return None
+        query = f"""
+        query GetNationWithCities($id: [Int]) {{
+            nations(id: $id, first: 1) {{
+                data {{
+                    {_NATION_FIELDS}
+                    continent
+                    population
+                    domestic_policy
+                    war_policy
+                    offensivewars
+                    defensivewars
+                    cities {{
+                        {_CITY_FIELDS}
+                    }}
+                }}
+            }}
+        }}
+        """
+        data = await self._query(query, {"id": [nation_id]})
+        nations = data.get("data", {}).get("nations", {}).get("data", [])
+        if not nations:
+            return None
+        n = nations[0]
+        nation = self._parse_nation(n)
+        nation.continent = n.get("continent", "") or ""
+        nation.population = int(n.get("population") or 0)
+        nation.domestic_policy = n.get("domestic_policy", "") or ""
+        nation.war_policy = n.get("war_policy", "") or ""
+        nation.offensivewars = int(n.get("offensivewars") or 0)
+        nation.defensivewars = int(n.get("defensivewars") or 0)
+        cities = [self._parse_city(c) for c in (n.get("cities") or [])]
+        return nation, cities
+
+    async def get_game_info(self) -> GameInfo:
+        """Fetch live game metadata: city average, game date, and radiation.
+
+        Falls back to ``GameInfo()`` defaults if the query fails.
+        """
+        query = """
+        query GetGameInfo {
+            game_info {
+                city_average
+                game_date
+                radiation {
+                    africa
+                    antarctica
+                    asia
+                    australia
+                    europe
+                    global
+                    north_america
+                    south_america
+                }
+            }
+        }
+        """
+        try:
+            data = await self._query(query, {})
+            gi = data.get("data", {}).get("game_info", {}) or {}
+            rad = gi.get("radiation", {}) or {}
+
+            # city_average is a direct numeric field on game_info
+            city_avg = float(gi.get("city_average") or 43.6)
+
+            # game_date may be "YYYY-MM-DD" or an object with a month field
+            game_date = gi.get("game_date", "")
+            month = 6
+            if isinstance(game_date, str) and game_date:
+                try:
+                    month = int(game_date.split("-")[1])
+                except (IndexError, ValueError):
+                    pass
+            elif isinstance(game_date, dict):
+                month = int(game_date.get("month", 6))
+
+            return GameInfo(
+                city_average=city_avg,
+                game_month=month,
+                global_radiation=float(rad.get("global", 0.0) or 0.0),
+                continent_radiation={
+                    "AF": float(rad.get("africa", 0.0) or 0.0),
+                    "AN": float(rad.get("antarctica", 0.0) or 0.0),
+                    "AS": float(rad.get("asia", 0.0) or 0.0),
+                    "AU": float(rad.get("australia", 0.0) or 0.0),
+                    "EU": float(rad.get("europe", 0.0) or 0.0),
+                    "NA": float(rad.get("north_america", 0.0) or 0.0),
+                    "SA": float(rad.get("south_america", 0.0) or 0.0),
+                },
+            )
+        except Exception:
+            log.exception("Failed to fetch game_info")
+            return GameInfo()
+
+
         """Fetch the lowest active buy-offer price for war-relevant resources.
 
         Uses the live trade market: querying open buy orders and taking the
@@ -626,33 +862,40 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Phase 1 – wars query: collects qualifying war IDs and reads war-level
-        damage totals (infra destroyed, money looted, enemy resource usage).
+        Uses the Locutus per-attack attribution model:
 
-        Phase 2 – warattacks query: iterates GROUND and VICTORY attacks only to
-        build per-attack resource loot totals and VICTORY money_stolen.
-        ``att_id`` in each WarAttack is the nation that *initiated* that specific
-        exchange (either the war's original attacker or the defender doing a
-        counterattack), so a single loop handles all roles.
+        Phase 1 – wars query: collects qualifying war IDs and records which
+        nations are alliance members (attacker or defender).  No war-level
+        damage totals are used — those are inaccurate because war-level
+        ``def_gas_used`` includes gas from both our attacks *and* enemy
+        counterattacks, inflating the resource-damage stat.
 
-        Attack-type breakdown:
-          Phase 1 (war level):
-          • att/def_infra_destroyed_value → infra_value  (all attack types)
-          • att/def_money_looted          → money_looted (GROUND attacks only;
-                                                          does not include VICTORY)
-          Phase 2 (per attack, GROUND + VICTORY only):
-          • VICTORY money_stolen          → money_looted (not in war-level total)
-          • GROUND / VICTORY loot_info    → gas/mun/alum/steel looted
+        Phase 2 – warattacks query: iterates ALL attack types so that every
+        exchange contributes to the correct member's stats.
+        ``att_id`` in each WarAttack is the nation that *initiated* that
+        specific exchange (either the war's original attacker or the defender
+        doing a counterattack).
+
+        Attribution rules per attack:
+          • def_*_used (all attacks where att_id is ours) → enemy resource cost
+          • att_infra_destroyed_value (winning attacks)   → infra_value
+          • money_stolen              (winning attacks)   → money_looted
+          • loot_info                 (winning GROUND / VICTORY) → resource loot
+          • loot_info on VICTORY                          → vict_* copies too
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
             "num_cities": int,       # nation's current city count
             "infra_value": float,    # monetary value of infrastructure damage dealt
-            "money_looted": float,   # money looted (all attack types)
+            "money_looted": float,   # money looted across all winning attacks
             "gas_looted": float,     # gasoline looted on member victories
             "mun_looted": float,     # munitions looted on member victories
             "alum_looted": float,    # aluminum looted on member victories
             "steel_looted": float,   # steel looted on member victories
+            "vict_gas_looted": float,   # gasoline looted specifically on beige
+            "vict_mun_looted": float,   # munitions looted specifically on beige
+            "vict_alum_looted": float,  # aluminum looted specifically on beige
+            "vict_steel_looted": float, # steel looted specifically on beige
             "def_gas_used": float,   # gasoline the enemy spent defending our attacks
             "def_mun_used": float,   # munitions the enemy spent defending our attacks
             "def_alum_used": float,  # aluminum the enemy spent defending our attacks
@@ -687,7 +930,10 @@ class PnWClient:
             }
 
         # ------------------------------------------------------------------
-        # Phase 1: collect qualifying wars.
+        # Phase 1: collect qualifying wars and nation membership.
+        #
+        # War-level damage totals are intentionally NOT used here; all damage
+        # data is derived from per-attack records in Phase 2 (Locutus model).
         # ------------------------------------------------------------------
         page = 1
         while True:
@@ -701,18 +947,6 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
-                        att_infra_destroyed_value
-                        def_infra_destroyed_value
-                        att_money_looted
-                        def_money_looted
-                        att_gas_used
-                        att_mun_used
-                        att_alum_used
-                        att_steel_used
-                        def_gas_used
-                        def_mun_used
-                        def_alum_used
-                        def_steel_used
                         attacker {
                             nation_name
                             num_cities
@@ -766,12 +1000,6 @@ class PnWClient:
                         entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("att_money_looted") or 0)
-                        entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
-                        entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
-                        entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
-                        entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
 
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
@@ -788,13 +1016,6 @@ class PnWClient:
                         entry = results.setdefault(def_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("def_money_looted") or 0)
-                        # Resources the enemy attacker was forced to spend.
-                        entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
-                        entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
-                        entry["def_alum_used"] += float(war.get("att_alum_used") or 0)
-                        entry["def_steel_used"] += float(war.get("att_steel_used") or 0)
 
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
@@ -809,16 +1030,20 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: per-attack resource loot and VICTORY money.
+        # Phase 2: per-attack attribution (Locutus model).
         #
-        # Infra damage, AIRVMONEY, and GROUND money_stolen are all covered by
-        # war-level fields fetched in Phase 1.  Phase 2 only needs to handle:
-        #   • VICTORY money_stolen  — not included in war-level money_stolen
-        #   • GROUND / VICTORY loot_info — per-city resource loot, no war-level field
+        # For every attack initiated by an alliance member (att_id in results):
+        #   • def_*_used                 → enemy resource cost (all attacks)
+        #   • att_infra_destroyed_value  → infra_value         (winning attacks)
+        #   • money_stolen               → money_looted        (winning attacks)
+        #   • loot_info                  → resource loot       (winning GROUND/VICTORY)
+        #
+        # Using per-attack fields avoids double-counting the enemy's counterattack
+        # resource usage that would otherwise be included in war-level totals.
         #
         # att_id in each WarAttack is the nation *initiating* that specific
         # attack (either the war's original attacker or the defender doing a
-        # counterattack), so crediting att_id covers both roles.
+        # counterattack), so a single loop covers both roles.
         # ------------------------------------------------------------------
         _VICTORY = "VICTORY"
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT  # {"GROUND", "VICTORY"}
@@ -836,6 +1061,11 @@ class PnWClient:
                             victor
                             loot_info
                             money_stolen
+                            att_infra_destroyed_value
+                            def_gas_used
+                            def_mun_used
+                            def_alum_used
+                            def_steel_used
                         }
                         paginatorInfo {
                             hasMorePages
@@ -862,37 +1092,46 @@ class PnWClient:
                         continue
 
                     attack_type = str(attack.get("type") or "")
-                    if attack_type not in _LOOT_TYPES:
+                    victor = int(attack.get("victor") or 0)
+                    won = bool(victor and victor == att_id)
+
+                    # Enemy resource consumption defending against this attack
+                    # (counted regardless of outcome — defender uses resources either way).
+                    results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
+                    results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
+                    results[att_id]["def_alum_used"] += float(attack.get("def_alum_used") or 0)
+                    results[att_id]["def_steel_used"] += float(attack.get("def_steel_used") or 0)
+
+                    if not won:
                         continue
 
-                    victor = int(attack.get("victor") or 0)
-                    if not victor or victor != att_id:
-                        continue  # attacker lost this exchange — no loot
+                    # Infra destroyed and money looted on a winning attack.
+                    results[att_id]["infra_value"] += float(
+                        attack.get("att_infra_destroyed_value") or 0
+                    )
+                    money_stolen = float(attack.get("money_stolen") or 0)
+                    if money_stolen > 0:
+                        results[att_id]["money_looted"] += money_stolen
 
-                    # VICTORY money_stolen is not reflected in war-level money_stolen.
-                    if attack_type == _VICTORY:
-                        money_stolen = float(attack.get("money_stolen") or 0)
-                        if money_stolen > 0:
-                            results[att_id]["money_looted"] += money_stolen
+                    # Resource loot from loot_info text (GROUND and VICTORY only).
+                    if attack_type in _LOOT_TYPES:
+                        loot_info = attack.get("loot_info") or ""
+                        if loot_info:
+                            gas, mun, alum, steel = _parse_resource_loot(loot_info)
+                            results[att_id]["gas_looted"] += gas
+                            results[att_id]["mun_looted"] += mun
+                            results[att_id]["alum_looted"] += alum
+                            results[att_id]["steel_looted"] += steel
 
-                    # Resource loot from loot_info text (GROUND and VICTORY).
-                    loot_info = attack.get("loot_info") or ""
-                    if loot_info:
-                        gas, mun, alum, steel = _parse_resource_loot(loot_info)
-                        results[att_id]["gas_looted"] += gas
-                        results[att_id]["mun_looted"] += mun
-                        results[att_id]["alum_looted"] += alum
-                        results[att_id]["steel_looted"] += steel
-
-                        # VICTORY loot also counts as resource damage dealt:
-                        # the enemy's stockpile is permanently reduced by the
-                        # looted amount, so track it separately for the
-                        # res-damage column as well as the loot column.
-                        if attack_type == _VICTORY:
-                            results[att_id]["vict_gas_looted"] += gas
-                            results[att_id]["vict_mun_looted"] += mun
-                            results[att_id]["vict_alum_looted"] += alum
-                            results[att_id]["vict_steel_looted"] += steel
+                            # VICTORY loot also counts as resource damage dealt:
+                            # the enemy's stockpile is permanently reduced by the
+                            # looted amount, so track it separately for the
+                            # res-damage column as well as the loot column.
+                            if attack_type == _VICTORY:
+                                results[att_id]["vict_gas_looted"] += gas
+                                results[att_id]["vict_mun_looted"] += mun
+                                results[att_id]["vict_alum_looted"] += alum
+                                results[att_id]["vict_steel_looted"] += steel
 
                 if not atk_has_more:
                     break
@@ -957,6 +1196,21 @@ class PnWClient:
             if def_id:
                 counts[def_id] = counts.get(def_id, 0) + 1
         return counts
+
+    async def get_nations_in_alliance_by_score_range(
+        self,
+        alliance_ids: list[int],
+        min_score: float,
+        max_score: float,
+    ) -> list[Nation]:
+        """Fetch non-vacation-mode members of the given alliances whose score
+        falls within [min_score, max_score].
+
+        The PnW GraphQL API does not support server-side score range filtering,
+        so all members are fetched and filtered locally.
+        """
+        members = await self.get_alliance_members(alliance_ids)
+        return [n for n in members if min_score <= n.score <= max_score]
 
     async def get_alliance_by_id(self, alliance_id: int) -> Optional[AllianceInfo]:
         """Fetch alliance statistics by numeric ID. Returns None if not found."""
@@ -1123,3 +1377,314 @@ class PnWClient:
             or stored.startswith(check + "#")
             or check.startswith(stored + "#")
         )
+
+
+# ---------------------------------------------------------------------------
+# Standalone utility functions
+# ---------------------------------------------------------------------------
+
+
+def calculate_infra_cost(buy_from: float, buy_to: float) -> float:
+    """Return the base cost (before project discounts) to buy infrastructure
+    from *buy_from* to *buy_to* in a single city.
+
+    Formula (integral of the marginal cost curve):
+        marginal cost at level i = $300 + $150 * i / 1000
+        total cost = 300*(to-from) + (150/2000)*(to²-from²)
+                   = 300*(to-from) + 0.075*(to²-from²)
+
+    Returns 0 if *buy_to* <= *buy_from*.
+    """
+    if buy_to <= buy_from:
+        return 0.0
+    diff = buy_to - buy_from
+    return 300.0 * diff + 0.075 * (buy_to * buy_to - buy_from * buy_from)
+
+
+# PnW score ↔ war-range constants
+WAR_RANGE_MIN_RATIO = 0.75  # can attack nations at ≥ 75 % of own score
+WAR_RANGE_MAX_RATIO = 2.5   # can attack nations at ≤ 250 % of own score
+
+
+# ---------------------------------------------------------------------------
+# City cost (Locutus dynamic formula)
+# ---------------------------------------------------------------------------
+
+# Default city_average used when game_info is unavailable.
+# Locutus uses 40.8216 as its stored fallback; current live value ~43.6.
+_CITY_COST_DEFAULT_AVERAGE = 43.6
+
+
+def calculate_city_cost(
+    current_count: int,
+    city_average: float = _CITY_COST_DEFAULT_AVERAGE,
+    manifest_destiny: bool = False,
+    government_support_agency: bool = False,
+    bureau_of_domestic_affairs: bool = False,
+) -> float:
+    """Return the cost of buying the next city when the nation currently has
+    *current_count* cities, using the Locutus dynamic formula.
+
+    Source: PW.java – ``PW.Cities.nextCityCost``
+
+    ``city_average`` is fetched live from ``game_info.city_average``
+    (default 43.6, Locutus's stored live value).
+
+    Manifest Destiny domestic-policy discounts (if applicable):
+        - Base: ×0.95 (5 % off)
+        - With Government Support Agency: ×0.925 (additional 2.5 %)
+        - With Bureau of Domestic Affairs: additional 1.25 %
+    """
+    n = current_count + 1          # city count after purchase
+    q = city_average * 0.25        # top-20-average-quarter pivot
+    dynamic = 100_000.0 * (n - q) ** 3 + 150_000.0 * (n - q) + 75_000.0
+    floor = 100_000.0 * n ** 2
+    cost = max(floor, dynamic)
+
+    if manifest_destiny:
+        factor = 0.05
+        if government_support_agency:
+            factor += 0.025
+        if bureau_of_domestic_affairs:
+            factor += 0.0125
+        cost *= 1.0 - factor
+
+    return max(1.0, cost)
+
+
+# ---------------------------------------------------------------------------
+# Revenue calculation (per-city formulas from community-verified sources)
+# ---------------------------------------------------------------------------
+
+# Turns per real-world day in PnW
+_TURNS_PER_DAY = 12
+
+# Commerce income constant: $ per 100 infra per turn at 100 % commerce
+_COMMERCE_INCOME = 726.17
+
+# Continent codes for seasonal food production modifier
+_NORTHERN_CONTINENTS = frozenset({"NA", "EU", "AS"})
+_SOUTHERN_CONTINENTS = frozenset({"SA", "AF", "AU"})
+
+
+def _normalize_continent(raw: str) -> str:
+    """Normalize a continent string to a two-letter upper-case code."""
+    mapping = {
+        "north america": "NA",
+        "europe": "EU",
+        "asia": "AS",
+        "africa": "AF",
+        "south america": "SA",
+        "australia": "AU",
+        "antarctica": "AN",
+    }
+    return mapping.get(raw.strip().lower(), raw.strip().upper()[:2])
+
+
+def _city_commerce_rate(city: City, has_itc: bool) -> float:
+    """Return the commerce % contributed by a single city's improvements."""
+    rate = (
+        city.supermarket * 3.5
+        + city.bank * 5.0
+        + city.shopping_mall * 5.0
+        + city.stadium * 5.0
+        + city.subway * 8.0
+    )
+    if has_itc:
+        rate += 2.0
+    return min(100.0, rate)
+
+
+def _raw_prod(count: int) -> float:
+    """Daily production for a raw-resource improvement (per mine/well).
+
+    Bonus: +1/18 ≈ 5.56 % per additional improvement of the same type above 1.
+    """
+    if count <= 0:
+        return 0.0
+    bonus = max(round((count - 1) * (1.0 / 18.0), 4), 0.0)
+    return count * 3.0 * (1.0 + bonus)
+
+
+def _uranium_prod(count: int, has_uep: bool) -> float:
+    """Daily uranium production; UEP doubles output and uses a larger bonus."""
+    if count <= 0:
+        return 0.0
+    bonus = max(round((count - 1) * 0.125, 4), 0.0)
+    return count * 3.0 * (1.0 + int(has_uep)) * (1.0 + bonus)
+
+
+def _manu_prod(count: int, per_unit: float, project_mult: float) -> float:
+    """Daily manufactured-resource production.
+
+    ``per_unit``      – base units per improvement per day.
+    ``project_mult``  – (1 + project_bonus), e.g. 1.36 for IW/BW, 3.0 for EGR.
+    Bonus per extra improvement of the same type: +12.5 %.
+    """
+    if count <= 0:
+        return 0.0
+    bonus = max(round((count - 1) * 0.125, 4), 0.0)
+    return count * per_unit * (1.0 + bonus) * project_mult
+
+
+def _coal_oil_power_usage(infra: float, plant_count: int) -> float:
+    """Coal or oil consumed per day by coal/oil power plants.
+
+    Each plant covers 500 infra and uses ceil(covered_infra / 100) * 1.2 per day.
+    """
+    if plant_count <= 0:
+        return 0.0
+    usage = 0.0
+    remaining = infra
+    for _ in range(plant_count):
+        covered = min(remaining, 500.0)
+        if covered <= 0:
+            break
+        usage += math.ceil(covered / 100.0) * 1.2
+        remaining -= 500.0
+    return usage
+
+
+def _nuclear_power_usage(infra: float, plant_count: int) -> float:
+    """Uranium consumed per day by nuclear power plants.
+
+    Each plant covers 2000 infra and uses ceil(covered_infra / 1000) * 1.2 per day.
+    """
+    if plant_count <= 0:
+        return 0.0
+    usage = 0.0
+    remaining = infra
+    for _ in range(plant_count):
+        covered = min(remaining, 2000.0)
+        if covered <= 0:
+            break
+        usage += math.ceil(covered / 1000.0) * 1.2
+        remaining -= 2000.0
+    return usage
+
+
+def _food_prod_per_city(
+    farm: int,
+    land: float,
+    has_mi: bool,
+    game_month: int,
+    continent: str,
+    cont_radiation: float,
+    global_radiation: float,
+) -> float:
+    """Daily food production for a single city.
+
+    Formulas sourced from community-verified pnw_utils.py (Jacob Knox / JacobKnox).
+    """
+    if farm <= 0:
+        return 0.0
+    land_div = 400.0 if has_mi else 500.0
+    prod = farm * 12.0 * (land / land_div)
+    # Per-farm quality bonus: +5/190 ≈ 2.63 % per additional farm above 1
+    farm_bonus = max(round((farm - 1) * (5.0 / 190.0), 4), 0.0)
+    prod *= 1.0 + farm_bonus
+
+    # Seasonal modifier (based on hemisphere)
+    season = 1.0
+    if continent in _NORTHERN_CONTINENTS:
+        if 5 < game_month < 9:    # Jun–Aug = northern summer
+            season = 1.2
+        elif game_month > 11 or game_month < 3:   # Dec–Feb = northern winter
+            season = 0.8
+    elif continent in _SOUTHERN_CONTINENTS:
+        if 5 < game_month < 9:    # Jun–Aug = southern winter
+            season = 0.8
+        elif game_month > 11 or game_month < 3:   # Dec–Feb = southern summer
+            season = 1.2
+    else:  # Antarctica
+        season = 0.5
+
+    # Radiation factor (reduces food production)
+    rad_factor = max(1.0 - (cont_radiation + global_radiation) / 1000.0, 0.0)
+    return prod * season * rad_factor
+
+
+def compute_nation_revenue(
+    nation: Nation,
+    cities: list[City],
+    game_info: Optional[GameInfo] = None,
+) -> NationRevenue:
+    """Compute estimated gross daily revenue for *nation* from *cities*.
+
+    Assumptions:
+    - Peacetime (soldiers consume less food; no wartime bonuses/penalties).
+    - All cities treated as powered (``city.powered`` still respected for mfg).
+    - Revenue is gross (before alliance tax).
+    """
+    if game_info is None:
+        game_info = GameInfo()
+
+    pb = set(nation.projects_built)
+    has_itc = "ITC" in pb
+    has_mi  = "MI"  in pb
+    has_uep = "UEP" in pb
+    has_iw  = "IW"  in pb   # Iron Works → steel/coal bonus
+    has_bw  = "BW"  in pb   # Bauxite Works → aluminum/bauxite bonus
+    has_egr = "EGR" in pb   # Emergency Gasoline Reserve → ×3 gasoline
+    has_as  = "AS"  in pb   # Arms Stockpile → ×2 munitions
+
+    continent = _normalize_continent(nation.continent or "NA")
+    cont_rad = game_info.radiation_for(continent)
+
+    # Project multipliers for manufactured resources
+    gasoline_mult = 1.0 + (2.0 if has_egr else 0.0)   # ×3 with EGR
+    munitions_mult = 1.0 + (1.0 if has_as  else 0.0)  # ×2 with AS
+    steel_mult     = 1.0 + (0.36 if has_iw else 0.0)  # +36 % with IW
+    aluminum_mult  = 1.0 + (0.36 if has_bw else 0.0)  # +36 % with BW
+
+    rev = NationRevenue()
+    total_commerce = 0.0
+
+    for city in cities:
+        commerce = _city_commerce_rate(city, has_itc)
+        total_commerce += commerce
+
+        # Money (gross, before tax)
+        rev.money += (
+            (city.infrastructure / 100.0)
+            * (commerce / 100.0)
+            * _COMMERCE_INCOME
+            * _TURNS_PER_DAY
+        )
+
+        # Food production
+        rev.food_production += _food_prod_per_city(
+            city.farm, city.land, has_mi,
+            game_info.game_month, continent,
+            cont_rad, game_info.global_radiation,
+        )
+
+        # Raw resources
+        rev.coal    += _raw_prod(city.coal_mine)
+        rev.oil     += _raw_prod(city.oil_well)
+        rev.iron    += _raw_prod(city.iron_mine)
+        rev.bauxite += _raw_prod(city.bauxite_mine)
+        rev.lead    += _raw_prod(city.lead_mine)
+        rev.uranium += _uranium_prod(city.uranium_mine, has_uep)
+
+        # Manufactured resources (only if city is powered)
+        if city.powered:
+            rev.gasoline  += _manu_prod(city.gasrefinery,       6.0,  gasoline_mult)
+            rev.munitions += _manu_prod(city.munitions_factory, 18.0, munitions_mult)
+            rev.steel     += _manu_prod(city.steel_mill,         9.0,  steel_mult)
+            rev.aluminum  += _manu_prod(city.aluminum_refinery,  9.0,  aluminum_mult)
+
+        # Power plant resource consumption (subtracts from raw resources)
+        if city.powered:
+            rev.coal    -= _coal_oil_power_usage(city.infrastructure, city.coal_power)
+            rev.oil     -= _coal_oil_power_usage(city.infrastructure, city.oil_power)
+            rev.uranium -= _nuclear_power_usage(city.infrastructure, city.nuclear_power)
+
+    # Food consumption (peacetime)
+    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 750.0
+
+    if cities:
+        rev.avg_commerce = total_commerce / len(cities)
+
+    return rev
+
