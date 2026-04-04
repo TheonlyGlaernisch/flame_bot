@@ -1688,7 +1688,7 @@ async def color_check(interaction: discord.Interaction) -> None:
         if nation_color == "beige":
             continue
         if nation_color != expected_color:
-            wrong_color.append((nation, nation.color or "unknown"))
+            wrong_color.append((nation, nation_color))
 
     if not wrong_color:
         embed = discord.Embed(
@@ -1705,8 +1705,8 @@ async def color_check(interaction: discord.Interaction) -> None:
 
     lines = [
         f"[{nation.nation_name}]({_nation_url(nation.nation_id)}) — "
-        f"🎨 **{color.title()}** (expected **{expected_color.title()}**)"
-        for nation, color in wrong_color
+        f"🎨 **{nation_color.title()}** (expected **{expected_color.title()}**)"
+        for nation, nation_color in wrong_color
     ]
     embed = discord.Embed(
         title=f"⚠️ Color Check — {alliance_info.name}",
