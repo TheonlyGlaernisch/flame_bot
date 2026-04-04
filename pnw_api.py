@@ -1,11 +1,48 @@
 """Thin async wrapper around the Politics and War GraphQL and REST APIs."""
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import aiohttp
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Loot-info parsing helpers
+# ---------------------------------------------------------------------------
+
+# PnW loot_info is a human-readable string like:
+#   "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel…"
+# We extract the four war-relevant manufactured resources using case-insensitive
+# patterns that tolerate comma-formatted numbers (e.g. "1,234").
+_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+gasoline", re.IGNORECASE)
+_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+munitions", re.IGNORECASE)
+_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+aluminum", re.IGNORECASE)
+_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+steel", re.IGNORECASE)
+
+
+def _parse_resource_loot(loot_info: str) -> tuple[float, float, float, float]:
+    """Return ``(gasoline, munitions, aluminum, steel)`` looted from a *loot_info* string."""
+
+    def _extract(pattern: re.Pattern) -> float:  # type: ignore[type-arg]
+        m = pattern.search(loot_info)
+        if m:
+            try:
+                return float(m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+        return 0.0
+
+    return (
+        _extract(_LOOT_GAS_RE),
+        _extract(_LOOT_MUN_RE),
+        _extract(_LOOT_ALU_RE),
+        _extract(_LOOT_STL_RE),
+    )
 
 PNW_GRAPHQL_URL = "https://api.politicsandwar.com/graphql"
 PNW_TEST_GRAPHQL_URL = "https://test.politicsandwar.com/graphql"
@@ -531,36 +568,47 @@ class PnWClient:
         alliance_id: int,
         after: datetime,
     ) -> dict[int, dict[str, Any]]:
-        """Return per-nation offensive damage totals for wars started after *after*.
+        """Return per-nation offensive damage and loot totals for wars started after *after*.
 
         Only wars where *alliance_id* is the attacker are counted.
+
+        Phase 1 – wars query: collects infra destroyed value, money looted, and
+        war IDs for all qualifying offensive wars.
+
+        Phase 2 – warattacks query: for each collected war, fetches individual
+        attacks of type ``GROUND`` (regular ground battle) or ``VICTORY`` (beige
+        loot), filters to attacks where the member's nation is the victor, and
+        parses the ``loot_info`` text to accumulate resource loot totals.
+
         Returns a dict mapping nation_id -> {
             "nation_name": str,
-            "num_cities": int,       # attacker's current city count
-            "infra_value": float,    # monetary value of infrastructure destroyed
-            "money_looted": float,   # money looted from the defender
-            "def_gas_used": float,   # gasoline the defender was forced to spend
-            "def_mun_used": float,   # munitions the defender was forced to spend
-            "def_alum_used": float,  # aluminum the defender was forced to spend
-            "def_steel_used": float, # steel the defender was forced to spend
+            "num_cities": int,      # attacker's current city count
+            "infra_value": float,   # monetary value of infrastructure destroyed
+            "money_looted": float,  # money looted (from war-level aggregate)
+            "gas_looted": float,    # gasoline looted on attacker victories
+            "mun_looted": float,    # munitions looted on attacker victories
+            "alum_looted": float,   # aluminum looted on attacker victories
+            "steel_looted": float,  # steel looted on attacker victories
         }.
         """
         results: dict[int, dict[str, Any]] = {}
+        war_ids: list[int] = []
+
+        # ------------------------------------------------------------------
+        # Phase 1: collect qualifying wars.
+        # ------------------------------------------------------------------
         page = 1
         while True:
             query = """
             query GetAllianceWars($alliance_id: [Int], $page: Int) {
                 wars(alliance_id: $alliance_id, page: $page, first: 100) {
                     data {
+                        id
                         att_id
                         att_alliance_id
                         date
                         att_infra_destroyed_value
                         att_money_looted
-                        def_gas_used
-                        def_mun_used
-                        def_alum_used
-                        def_steel_used
                         attacker {
                             nation_name
                             num_cities
@@ -601,6 +649,7 @@ class PnWClient:
                 if att_id == 0:
                     continue
 
+                war_id = int(war.get("id") or 0)
                 attacker_data = war.get("attacker") or {}
                 nation_name = attacker_data.get("nation_name") or str(att_id)
                 num_cities = int(attacker_data.get("num_cities") or 0)
@@ -612,10 +661,10 @@ class PnWClient:
                         "num_cities": num_cities,
                         "infra_value": 0.0,
                         "money_looted": 0.0,
-                        "def_gas_used": 0.0,
-                        "def_mun_used": 0.0,
-                        "def_alum_used": 0.0,
-                        "def_steel_used": 0.0,
+                        "gas_looted": 0.0,
+                        "mun_looted": 0.0,
+                        "alum_looted": 0.0,
+                        "steel_looted": 0.0,
                     },
                 )
                 # Keep the most up-to-date city count seen across wars.
@@ -623,16 +672,87 @@ class PnWClient:
                     entry["num_cities"] = num_cities
                 entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
                 entry["money_looted"] += float(war.get("att_money_looted") or 0)
-                entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
-                entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
-                entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
-                entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
+
+                if war_id:
+                    war_ids.append(war_id)
 
             # Stop once there are no more pages or every war on this page predates
             # the cutoff (the API returns wars in descending date order).
             if not has_more or all_before_cutoff:
                 break
             page += 1
+
+        if not war_ids:
+            return results
+
+        # ------------------------------------------------------------------
+        # Phase 2: collect resource loot from individual attack records.
+        # We look for GROUND attacks (per-city loot on a ground battle win)
+        # and VICTORY attacks (beige loot when resistance hits 0).
+        # In both cases the winner is identified by victor == att_id (nation
+        # ID of the attacking nation for that specific attack).
+        # ------------------------------------------------------------------
+        _LOOT_TYPES = {"GROUND", "VICTORY"}
+        _BATCH = 50
+        for batch_start in range(0, len(war_ids), _BATCH):
+            batch = war_ids[batch_start : batch_start + _BATCH]
+            atk_page = 1
+            while True:
+                atk_query = """
+                query GetWarAttacks($war_id: [Int], $page: Int) {
+                    warattacks(war_id: $war_id, page: $page, first: 100) {
+                        data {
+                            att_id
+                            type
+                            victor
+                            loot_info
+                        }
+                        paginatorInfo {
+                            hasMorePages
+                        }
+                    }
+                }
+                """
+                try:
+                    atk_data = await self._query(
+                        atk_query, {"war_id": batch, "page": atk_page}
+                    )
+                except Exception:
+                    log.exception("PnW API error fetching warattacks for resource loot")
+                    break
+                atk_payload = atk_data.get("data", {}).get("warattacks", {})
+                attacks = atk_payload.get("data", [])
+                atk_has_more = (
+                    atk_payload.get("paginatorInfo", {}).get("hasMorePages", False)
+                )
+
+                for attack in attacks:
+                    # Only process GROUND and VICTORY attack types.
+                    if str(attack.get("type") or "") not in _LOOT_TYPES:
+                        continue
+
+                    att_id = int(attack.get("att_id") or 0)
+                    if att_id not in results:
+                        continue
+
+                    # victor is the nation ID of the winner; skip if our member lost.
+                    victor = int(attack.get("victor") or 0)
+                    if victor != att_id:
+                        continue
+
+                    loot_info = attack.get("loot_info") or ""
+                    if not loot_info:
+                        continue
+
+                    gas, mun, alum, steel = _parse_resource_loot(loot_info)
+                    results[att_id]["gas_looted"] += gas
+                    results[att_id]["mun_looted"] += mun
+                    results[att_id]["alum_looted"] += alum
+                    results[att_id]["steel_looted"] += steel
+
+                if not atk_has_more:
+                    break
+                atk_page += 1
 
         return results
 

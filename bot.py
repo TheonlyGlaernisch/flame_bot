@@ -1905,6 +1905,44 @@ async def admin_clear_guild_commands_error(
 
 
 # ---------------------------------------------------------------------------
+# /admin sync
+# ---------------------------------------------------------------------------
+
+
+@admin_group.command(
+    name="sync",
+    description="Copy global commands to this server for instant propagation (admin only).",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_sync(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("❌ This command must be used inside a server.", ephemeral=True)
+        return
+    bot.tree.copy_global_to(guild=guild)
+    await bot.tree.sync(guild=guild)
+    log.info("Guild %d: commands synced to guild by %s", guild.id, interaction.user)
+    await interaction.followup.send(
+        "✅ Commands synced to this server. New commands should appear within seconds.",
+        ephemeral=True,
+    )
+
+
+@admin_sync.error
+async def admin_sync_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
 # /color check
 # ---------------------------------------------------------------------------
 
@@ -2016,7 +2054,7 @@ bot.tree.add_command(damage_group)
 
 @damage_group.command(
     name="leaderboard",
-    description="Show damage dealt by each member of the configured alliance in the past week.",
+    description="Show loot and damage dealt by each member of the configured alliance in the past week.",
 )
 async def damage_command(
     interaction: discord.Interaction,
@@ -2037,7 +2075,6 @@ async def damage_command(
 
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_DAMAGE_LOOKBACK_DAYS)
 
-    # Run damage fetch and trade prices concurrently.
     import asyncio
 
     damage_task = asyncio.ensure_future(bot.pnw.get_alliance_damage(alliance_id, cutoff))
@@ -2067,46 +2104,39 @@ async def damage_command(
         )
         return
 
-    def _total(stats: dict) -> float:
-        return (
-            stats["infra_value"]
-            + stats["money_looted"]
-            + prices.resource_value(
-                gasoline=stats["def_gas_used"],
-                munitions=stats["def_mun_used"],
-                aluminum=stats["def_alum_used"],
-                steel=stats["def_steel_used"],
-            )
+    def _loot_value(stats: dict) -> float:
+        return stats["money_looted"] + prices.resource_value(
+            gasoline=stats["gas_looted"],
+            munitions=stats["mun_looted"],
+            aluminum=stats["alum_looted"],
+            steel=stats["steel_looted"],
         )
 
-    # Sort nations by total damage descending.
+    # Sort by loot value descending.
     sorted_nations = sorted(
         damage_map.items(),
-        key=lambda item: _total(item[1]),
+        key=lambda item: _loot_value(item[1]),
         reverse=True,
     )
 
     lines: list[str] = []
     for rank, (nation_id, stats) in enumerate(sorted_nations, start=1):
-        total = _total(stats)
+        loot = _loot_value(stats)
         name = stats["nation_name"]
         url = _nation_url(nation_id)
         cities = stats["num_cities"]
-        per_city = total / cities if cities > 0 else 0.0
+        per_city = loot / cities if cities > 0 else 0.0
         per_city_str = f"${per_city:,.0f}/city" if cities > 0 else "—"
         res_val = prices.resource_value(
-            gasoline=stats["def_gas_used"],
-            munitions=stats["def_mun_used"],
-            aluminum=stats["def_alum_used"],
-            steel=stats["def_steel_used"],
-        )
-        breakdown = (
-            f"💥 ${stats['infra_value']:,.0f} + 💰 ${stats['money_looted']:,.0f}"
-            f" + 🧪 ${res_val:,.0f}"
+            gasoline=stats["gas_looted"],
+            munitions=stats["mun_looted"],
+            aluminum=stats["alum_looted"],
+            steel=stats["steel_looted"],
         )
         lines.append(
-            f"{rank}. [{name}]({url}) — **${total:,.0f}** ({per_city_str}) "
-            f"({breakdown})"
+            f"{rank}. [{name}]({url}) — 💰 **${loot:,.0f}** loot ({per_city_str})"
+            f" (💵 ${stats['money_looted']:,.0f} + 🧪 ${res_val:,.0f}"
+            f" | 💥 ${stats['infra_value']:,.0f} dmg)"
         )
 
     # Respect Discord's 4096-character description limit.
@@ -2125,16 +2155,16 @@ async def damage_command(
         description += f"\n*… and {truncated_at} more*"
 
     embed = discord.Embed(
-        title=f"⚔️ Damage Dealt — Past {_DAMAGE_LOOKBACK_DAYS} Days",
+        title=f"💰 Loot Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
         description=description,
-        color=discord.Color.red(),
+        color=discord.Color.gold(),
     )
     embed.set_footer(text=" · ".join([
         f"{len(sorted_nations)} member(s) with offensive wars",
+        "💵 = money looted",
+        "🧪 = resources looted at market price",
         "💥 = infra destroyed value",
-        "💰 = money looted",
-        "🧪 = defender resource losses at market price",
-        "/city = per attacker city",
+        "/city = loot per attacker city",
     ]))
     await interaction.followup.send(embed=embed)
 
@@ -2163,8 +2193,9 @@ _HELP_COMMANDS = [
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
+    ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
-    ("/damage leaderboard", "Show damage dealt by each member of the configured alliance (past 7 days), including defender resource losses at live market prices."),
+    ("/damage leaderboard", "Show loot leaderboard (money + resources at market price from ground/beige victories, past 7 days) with infra damage."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
