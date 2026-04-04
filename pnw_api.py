@@ -626,33 +626,40 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Phase 1 – wars query: collects qualifying war IDs and reads war-level
-        damage totals (infra destroyed, money looted, enemy resource usage).
+        Uses the Locutus per-attack attribution model:
 
-        Phase 2 – warattacks query: iterates GROUND and VICTORY attacks only to
-        build per-attack resource loot totals and VICTORY money_stolen.
-        ``att_id`` in each WarAttack is the nation that *initiated* that specific
-        exchange (either the war's original attacker or the defender doing a
-        counterattack), so a single loop handles all roles.
+        Phase 1 – wars query: collects qualifying war IDs and records which
+        nations are alliance members (attacker or defender).  No war-level
+        damage totals are used — those are inaccurate because war-level
+        ``def_gas_used`` includes gas from both our attacks *and* enemy
+        counterattacks, inflating the resource-damage stat.
 
-        Attack-type breakdown:
-          Phase 1 (war level):
-          • att/def_infra_destroyed_value → infra_value  (all attack types)
-          • att/def_money_looted          → money_looted (GROUND attacks only;
-                                                          does not include VICTORY)
-          Phase 2 (per attack, GROUND + VICTORY only):
-          • VICTORY money_stolen          → money_looted (not in war-level total)
-          • GROUND / VICTORY loot_info    → gas/mun/alum/steel looted
+        Phase 2 – warattacks query: iterates ALL attack types so that every
+        exchange contributes to the correct member's stats.
+        ``att_id`` in each WarAttack is the nation that *initiated* that
+        specific exchange (either the war's original attacker or the defender
+        doing a counterattack).
+
+        Attribution rules per attack:
+          • def_*_used (all attacks where att_id is ours) → enemy resource cost
+          • att_infra_destroyed_value (winning attacks)   → infra_value
+          • money_stolen              (winning attacks)   → money_looted
+          • loot_info                 (winning GROUND / VICTORY) → resource loot
+          • loot_info on VICTORY                          → vict_* copies too
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
             "num_cities": int,       # nation's current city count
             "infra_value": float,    # monetary value of infrastructure damage dealt
-            "money_looted": float,   # money looted (all attack types)
+            "money_looted": float,   # money looted across all winning attacks
             "gas_looted": float,     # gasoline looted on member victories
             "mun_looted": float,     # munitions looted on member victories
             "alum_looted": float,    # aluminum looted on member victories
             "steel_looted": float,   # steel looted on member victories
+            "vict_gas_looted": float,   # gasoline looted specifically on beige
+            "vict_mun_looted": float,   # munitions looted specifically on beige
+            "vict_alum_looted": float,  # aluminum looted specifically on beige
+            "vict_steel_looted": float, # steel looted specifically on beige
             "def_gas_used": float,   # gasoline the enemy spent defending our attacks
             "def_mun_used": float,   # munitions the enemy spent defending our attacks
             "def_alum_used": float,  # aluminum the enemy spent defending our attacks
@@ -687,7 +694,10 @@ class PnWClient:
             }
 
         # ------------------------------------------------------------------
-        # Phase 1: collect qualifying wars.
+        # Phase 1: collect qualifying wars and nation membership.
+        #
+        # War-level damage totals are intentionally NOT used here; all damage
+        # data is derived from per-attack records in Phase 2 (Locutus model).
         # ------------------------------------------------------------------
         page = 1
         while True:
@@ -701,18 +711,6 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
-                        att_infra_destroyed_value
-                        def_infra_destroyed_value
-                        att_money_looted
-                        def_money_looted
-                        att_gas_used
-                        att_mun_used
-                        att_alum_used
-                        att_steel_used
-                        def_gas_used
-                        def_mun_used
-                        def_alum_used
-                        def_steel_used
                         attacker {
                             nation_name
                             num_cities
@@ -766,12 +764,6 @@ class PnWClient:
                         entry = results.setdefault(att_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("att_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("att_money_looted") or 0)
-                        entry["def_gas_used"] += float(war.get("def_gas_used") or 0)
-                        entry["def_mun_used"] += float(war.get("def_mun_used") or 0)
-                        entry["def_alum_used"] += float(war.get("def_alum_used") or 0)
-                        entry["def_steel_used"] += float(war.get("def_steel_used") or 0)
 
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
@@ -788,13 +780,6 @@ class PnWClient:
                         entry = results.setdefault(def_id, _make_entry(nation_name, num_cities))
                         if num_cities > entry["num_cities"]:
                             entry["num_cities"] = num_cities
-                        entry["infra_value"] += float(war.get("def_infra_destroyed_value") or 0)
-                        entry["money_looted"] += float(war.get("def_money_looted") or 0)
-                        # Resources the enemy attacker was forced to spend.
-                        entry["def_gas_used"] += float(war.get("att_gas_used") or 0)
-                        entry["def_mun_used"] += float(war.get("att_mun_used") or 0)
-                        entry["def_alum_used"] += float(war.get("att_alum_used") or 0)
-                        entry["def_steel_used"] += float(war.get("att_steel_used") or 0)
 
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
@@ -809,16 +794,20 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: per-attack resource loot and VICTORY money.
+        # Phase 2: per-attack attribution (Locutus model).
         #
-        # Infra damage, AIRVMONEY, and GROUND money_stolen are all covered by
-        # war-level fields fetched in Phase 1.  Phase 2 only needs to handle:
-        #   • VICTORY money_stolen  — not included in war-level money_stolen
-        #   • GROUND / VICTORY loot_info — per-city resource loot, no war-level field
+        # For every attack initiated by an alliance member (att_id in results):
+        #   • def_*_used                 → enemy resource cost (all attacks)
+        #   • att_infra_destroyed_value  → infra_value         (winning attacks)
+        #   • money_stolen               → money_looted        (winning attacks)
+        #   • loot_info                  → resource loot       (winning GROUND/VICTORY)
+        #
+        # Using per-attack fields avoids double-counting the enemy's counterattack
+        # resource usage that would otherwise be included in war-level totals.
         #
         # att_id in each WarAttack is the nation *initiating* that specific
         # attack (either the war's original attacker or the defender doing a
-        # counterattack), so crediting att_id covers both roles.
+        # counterattack), so a single loop covers both roles.
         # ------------------------------------------------------------------
         _VICTORY = "VICTORY"
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT  # {"GROUND", "VICTORY"}
@@ -836,6 +825,11 @@ class PnWClient:
                             victor
                             loot_info
                             money_stolen
+                            att_infra_destroyed_value
+                            def_gas_used
+                            def_mun_used
+                            def_alum_used
+                            def_steel_used
                         }
                         paginatorInfo {
                             hasMorePages
@@ -862,37 +856,46 @@ class PnWClient:
                         continue
 
                     attack_type = str(attack.get("type") or "")
-                    if attack_type not in _LOOT_TYPES:
+                    victor = int(attack.get("victor") or 0)
+                    won = bool(victor and victor == att_id)
+
+                    # Enemy resource consumption defending against this attack
+                    # (counted regardless of outcome — defender uses resources either way).
+                    results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
+                    results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
+                    results[att_id]["def_alum_used"] += float(attack.get("def_alum_used") or 0)
+                    results[att_id]["def_steel_used"] += float(attack.get("def_steel_used") or 0)
+
+                    if not won:
                         continue
 
-                    victor = int(attack.get("victor") or 0)
-                    if not victor or victor != att_id:
-                        continue  # attacker lost this exchange — no loot
+                    # Infra destroyed and money looted on a winning attack.
+                    results[att_id]["infra_value"] += float(
+                        attack.get("att_infra_destroyed_value") or 0
+                    )
+                    money_stolen = float(attack.get("money_stolen") or 0)
+                    if money_stolen > 0:
+                        results[att_id]["money_looted"] += money_stolen
 
-                    # VICTORY money_stolen is not reflected in war-level money_stolen.
-                    if attack_type == _VICTORY:
-                        money_stolen = float(attack.get("money_stolen") or 0)
-                        if money_stolen > 0:
-                            results[att_id]["money_looted"] += money_stolen
+                    # Resource loot from loot_info text (GROUND and VICTORY only).
+                    if attack_type in _LOOT_TYPES:
+                        loot_info = attack.get("loot_info") or ""
+                        if loot_info:
+                            gas, mun, alum, steel = _parse_resource_loot(loot_info)
+                            results[att_id]["gas_looted"] += gas
+                            results[att_id]["mun_looted"] += mun
+                            results[att_id]["alum_looted"] += alum
+                            results[att_id]["steel_looted"] += steel
 
-                    # Resource loot from loot_info text (GROUND and VICTORY).
-                    loot_info = attack.get("loot_info") or ""
-                    if loot_info:
-                        gas, mun, alum, steel = _parse_resource_loot(loot_info)
-                        results[att_id]["gas_looted"] += gas
-                        results[att_id]["mun_looted"] += mun
-                        results[att_id]["alum_looted"] += alum
-                        results[att_id]["steel_looted"] += steel
-
-                        # VICTORY loot also counts as resource damage dealt:
-                        # the enemy's stockpile is permanently reduced by the
-                        # looted amount, so track it separately for the
-                        # res-damage column as well as the loot column.
-                        if attack_type == _VICTORY:
-                            results[att_id]["vict_gas_looted"] += gas
-                            results[att_id]["vict_mun_looted"] += mun
-                            results[att_id]["vict_alum_looted"] += alum
-                            results[att_id]["vict_steel_looted"] += steel
+                            # VICTORY loot also counts as resource damage dealt:
+                            # the enemy's stockpile is permanently reduced by the
+                            # looted amount, so track it separately for the
+                            # res-damage column as well as the loot column.
+                            if attack_type == _VICTORY:
+                                results[att_id]["vict_gas_looted"] += gas
+                                results[att_id]["vict_mun_looted"] += mun
+                                results[att_id]["vict_alum_looted"] += alum
+                                results[att_id]["vict_steel_looted"] += steel
 
                 if not atk_has_more:
                     break
@@ -957,6 +960,21 @@ class PnWClient:
             if def_id:
                 counts[def_id] = counts.get(def_id, 0) + 1
         return counts
+
+    async def get_nations_in_alliance_by_score_range(
+        self,
+        alliance_ids: list[int],
+        min_score: float,
+        max_score: float,
+    ) -> list[Nation]:
+        """Fetch non-vacation-mode members of the given alliances whose score
+        falls within [min_score, max_score].
+
+        The PnW GraphQL API does not support server-side score range filtering,
+        so all members are fetched and filtered locally.
+        """
+        members = await self.get_alliance_members(alliance_ids)
+        return [n for n in members if min_score <= n.score <= max_score]
 
     async def get_alliance_by_id(self, alliance_id: int) -> Optional[AllianceInfo]:
         """Fetch alliance statistics by numeric ID. Returns None if not found."""
@@ -1123,3 +1141,30 @@ class PnWClient:
             or stored.startswith(check + "#")
             or check.startswith(stored + "#")
         )
+
+
+# ---------------------------------------------------------------------------
+# Standalone utility functions
+# ---------------------------------------------------------------------------
+
+
+def calculate_infra_cost(buy_from: float, buy_to: float) -> float:
+    """Return the base cost (before project discounts) to buy infrastructure
+    from *buy_from* to *buy_to* in a single city.
+
+    Formula (integral of the marginal cost curve):
+        marginal cost at level i = $300 + $150 * i / 1000
+        total cost = 300*(to-from) + (150/2000)*(to²-from²)
+                   = 300*(to-from) + 0.075*(to²-from²)
+
+    Returns 0 if *buy_to* <= *buy_from*.
+    """
+    if buy_to <= buy_from:
+        return 0.0
+    diff = buy_to - buy_from
+    return 300.0 * diff + 0.075 * (buy_to ** 2 - buy_from ** 2)
+
+
+# PnW score ↔ war-range constants
+WAR_RANGE_MIN_RATIO = 0.75  # can attack nations at ≥ 75 % of own score
+WAR_RANGE_MAX_RATIO = 1.25  # can attack nations at ≤ 125 % of own score

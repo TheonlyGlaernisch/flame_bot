@@ -109,6 +109,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import Optional
 
 import discord
 from aiohttp import web
@@ -124,10 +125,13 @@ from pnw_api import (
     MAX_SOLDIERS_PER_CITY,
     MAX_TANKS_PER_CITY,
     PNW_TEST_REST_URL,
+    WAR_RANGE_MAX_RATIO,
+    WAR_RANGE_MIN_RATIO,
     AllianceInfo,
     Nation,
     PnWClient,
     TradePrice,
+    calculate_infra_cost,
 )
 
 # ---------------------------------------------------------------------------
@@ -2293,12 +2297,14 @@ async def damage_command(
 
     damage_task = asyncio.ensure_future(bot.pnw.get_alliance_damage(alliance_id, cutoff))
     prices_task = asyncio.ensure_future(bot.pnw.get_trade_prices())
+    members_task = asyncio.ensure_future(bot.pnw.get_alliance_members([alliance_id]))
 
     try:
         damage_map = await damage_task
     except Exception as exc:
         log.exception("PnW API error while fetching alliance damage")
         prices_task.cancel()
+        members_task.cancel()
         await interaction.followup.send(
             embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
         )
@@ -2310,10 +2316,43 @@ async def damage_command(
         log.exception("PnW API error while fetching trade prices")
         prices = TradePrice()
 
+    try:
+        all_members = await members_task
+    except Exception:
+        log.exception("PnW API error while fetching alliance members")
+        all_members = []
+
+    # Include all current alliance members even if they have no wars.
+    # Members with no activity appear with zero stats and sort to the bottom.
+    for member in all_members:
+        if member.nation_id not in damage_map:
+            damage_map[member.nation_id] = {
+                "nation_name": member.nation_name,
+                "num_cities": member.num_cities,
+                "infra_value": 0.0,
+                "money_looted": 0.0,
+                "gas_looted": 0.0,
+                "mun_looted": 0.0,
+                "alum_looted": 0.0,
+                "steel_looted": 0.0,
+                "vict_gas_looted": 0.0,
+                "vict_mun_looted": 0.0,
+                "vict_alum_looted": 0.0,
+                "vict_steel_looted": 0.0,
+                "def_gas_used": 0.0,
+                "def_mun_used": 0.0,
+                "def_alum_used": 0.0,
+                "def_steel_used": 0.0,
+            }
+        else:
+            # Update city count to current value from the member query.
+            if member.num_cities > damage_map[member.nation_id]["num_cities"]:
+                damage_map[member.nation_id]["num_cities"] = member.num_cities
+
     if not damage_map:
         await interaction.followup.send(
             embed=_info_embed(
-                "ℹ️ No wars found for the configured alliance in the past week."
+                "ℹ️ No members found for the configured alliance."
             )
         )
         return
@@ -2642,7 +2681,7 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
     # Collect distinct alliance names for the embed title
     seen: set[int] = set()
     alliance_names: list[str] = []
-    for n, _ in top_nations:
+    for n, _, _ in top_nations:
         if n.alliance_id not in seen:
             seen.add(n.alliance_id)
             if n.alliance_name:
@@ -2652,6 +2691,330 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
 
     embed = _build_missile_targets_embed(top_nations, alliance_names)
     await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /infra cost
+# ---------------------------------------------------------------------------
+
+# Project discount rates for infrastructure purchase cost.
+_INFRA_DISCOUNT_UP = 0.05   # Urban Planning
+_INFRA_DISCOUNT_ACP = 0.10  # Advanced Urban Planning (stacks with UP)
+
+
+@bot.tree.command(
+    name="infra",
+    description="Calculate the cost to buy infrastructure.",
+)
+@app_commands.describe(
+    current_infra="Current infrastructure level per city.",
+    target_infra="Target infrastructure level per city.",
+    cities="Number of cities to calculate total cost across (default: 1).",
+    urban_planning="Does the nation have Urban Planning? (−5% cost)",
+    advanced_urban_planning="Does the nation have Advanced Urban Planning? (−10% cost, stacks with UP)",
+)
+async def infra_cost_command(
+    interaction: discord.Interaction,
+    current_infra: float,
+    target_infra: float,
+    cities: int = 1,
+    urban_planning: bool = False,
+    advanced_urban_planning: bool = False,
+) -> None:
+    await interaction.response.defer()
+
+    if cities < 1:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Number of cities must be at least 1.")
+        )
+        return
+
+    if target_infra <= current_infra:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Target infrastructure must be greater than current infrastructure.")
+        )
+        return
+
+    if current_infra < 0 or target_infra > 100_000:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Infrastructure values must be between 0 and 100,000.")
+        )
+        return
+
+    base_cost_per_city = calculate_infra_cost(current_infra, target_infra)
+
+    # Apply project discounts (additive).
+    discount = 0.0
+    discount_parts: list[str] = []
+    if urban_planning:
+        discount += _INFRA_DISCOUNT_UP
+        discount_parts.append(f"Urban Planning (−{_INFRA_DISCOUNT_UP * 100:.0f}%)")
+    if advanced_urban_planning:
+        discount += _INFRA_DISCOUNT_ACP
+        discount_parts.append(f"Advanced Urban Planning (−{_INFRA_DISCOUNT_ACP * 100:.0f}%)")
+
+    discounted_cost_per_city = base_cost_per_city * (1.0 - discount)
+    total_cost = discounted_cost_per_city * cities
+
+    embed = discord.Embed(
+        title="🏗️ Infrastructure Cost Calculator",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="From", value=f"{current_infra:,.2f}", inline=True)
+    embed.add_field(name="To", value=f"{target_infra:,.2f}", inline=True)
+    embed.add_field(name="Amount", value=f"+{target_infra - current_infra:,.2f}", inline=True)
+    embed.add_field(name="Cost per City", value=f"${discounted_cost_per_city:,.0f}", inline=True)
+    embed.add_field(name="Cities", value=str(cities), inline=True)
+    embed.add_field(name="Total Cost", value=f"**${total_cost:,.0f}**", inline=True)
+
+    if discount_parts:
+        embed.add_field(
+            name=f"Discounts (−{discount * 100:.0f}% total)",
+            value="\n".join(discount_parts),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Discounts", value="None", inline=False)
+
+    if discount > 0:
+        embed.set_footer(
+            text=f"Base cost per city: ${base_cost_per_city:,.0f}  ·  Savings: ${(base_cost_per_city - discounted_cost_per_city) * cities:,.0f}"
+        )
+    await interaction.followup.send(embed=embed)
+
+
+# ---------------------------------------------------------------------------
+# /war range targets
+# ---------------------------------------------------------------------------
+
+_WAR_RANGE_PAGE_SIZE = 15
+
+
+def _build_war_range_embed(
+    nation: pnw_api.Nation,
+    targets: list[tuple[pnw_api.Nation, int]],
+    page: int,
+    multi_alliance: bool,
+) -> discord.Embed:
+    """Build the war-range targets embed."""
+    min_score = nation.score * WAR_RANGE_MIN_RATIO
+    max_score = nation.score * WAR_RANGE_MAX_RATIO
+
+    total = len(targets)
+    total_pages = max(1, (total + _WAR_RANGE_PAGE_SIZE - 1) // _WAR_RANGE_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * _WAR_RANGE_PAGE_SIZE
+    page_slice = targets[start : start + _WAR_RANGE_PAGE_SIZE]
+
+    lines: list[str] = []
+    for i, (t, def_wars) in enumerate(page_slice, start=start + 1):
+        beige = " 🔵" if t.beige_turns > 0 else ""
+        alliance_tag = (
+            f" [{t.alliance_name}]" if multi_alliance and t.alliance_name else ""
+        )
+        open_slots = MAX_DEFENSIVE_SLOTS - def_wars
+        line = (
+            f"`{i:>3}.` [{t.nation_name}]({_nation_url(t.nation_id)})"
+            f"{beige}{alliance_tag}"
+            f" — 🏙️ {t.num_cities} · 📊 {t.score:,.0f}"
+            f" | 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS} slots"
+        )
+        lines.append(line)
+
+    embed = discord.Embed(
+        title=f"⚔️ War Range Targets for {nation.nation_name}",
+        description="\n".join(lines) if lines else "*(no targets found)*",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Your Score", value=f"{nation.score:,.2f}", inline=True)
+    embed.add_field(name="Min Target Score", value=f"{min_score:,.2f}", inline=True)
+    embed.add_field(name="Max Target Score", value=f"{max_score:,.2f}", inline=True)
+
+    footer_parts: list[str] = [f"{total} target(s) in range"]
+    if total_pages > 1:
+        footer_parts.append(f"Page {page + 1}/{total_pages}")
+    footer_parts.append("open def slots only · 🔵 = beiged")
+    embed.set_footer(text="  ·  ".join(footer_parts))
+    return embed
+
+
+class WarRangeView(discord.ui.View):
+    """Pagination buttons for /war range targets."""
+
+    def __init__(
+        self,
+        nation: pnw_api.Nation,
+        targets: list[tuple[pnw_api.Nation, int]],
+        multi_alliance: bool,
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=300)
+        self._nation = nation
+        self._targets = targets
+        self._multi_alliance = multi_alliance
+        self.page = page
+        self._refresh_buttons()
+
+    @property
+    def _total_pages(self) -> int:
+        return max(
+            1,
+            (len(self._targets) + _WAR_RANGE_PAGE_SIZE - 1) // _WAR_RANGE_PAGE_SIZE,
+        )
+
+    def _refresh_buttons(self) -> None:
+        self.clear_items()
+        if self._total_pages <= 1:
+            return
+        prev_btn = discord.ui.Button(
+            label="◀",
+            style=discord.ButtonStyle.secondary,
+            custom_id="wr_prev",
+            disabled=self.page <= 0,
+            row=0,
+        )
+        prev_btn.callback = self._prev_cb
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(
+            label="▶",
+            style=discord.ButtonStyle.secondary,
+            custom_id="wr_next",
+            disabled=self.page >= self._total_pages - 1,
+            row=0,
+        )
+        next_btn.callback = self._next_cb
+        self.add_item(next_btn)
+
+    async def _prev_cb(self, interaction: discord.Interaction) -> None:
+        self.page = max(0, self.page - 1)
+        self._refresh_buttons()
+        await interaction.response.edit_message(
+            embed=_build_war_range_embed(
+                self._nation, self._targets, self.page, self._multi_alliance
+            ),
+            view=self,
+        )
+
+    async def _next_cb(self, interaction: discord.Interaction) -> None:
+        self.page = min(self._total_pages - 1, self.page + 1)
+        self._refresh_buttons()
+        await interaction.response.edit_message(
+            embed=_build_war_range_embed(
+                self._nation, self._targets, self.page, self._multi_alliance
+            ),
+            view=self,
+        )
+
+
+war_group = app_commands.Group(
+    name="war",
+    description="War-related commands.",
+)
+bot.tree.add_command(war_group)
+
+war_range_group = app_commands.Group(
+    name="range",
+    description="War range commands.",
+)
+war_group.add_command(war_range_group)
+
+
+@war_range_group.command(
+    name="targets",
+    description="Show /slots nations in your war range that have open defensive slots.",
+)
+@app_commands.describe(
+    user="The Discord user to look up (defaults to yourself).",
+)
+async def war_range_targets(
+    interaction: discord.Interaction,
+    user: Optional[discord.Member] = None,
+) -> None:
+    await interaction.response.defer()
+
+    target_user = user or interaction.user
+    guild_id = interaction.guild_id or 0
+
+    # Resolve the nation for the target user.
+    row = bot.db.get_by_discord_id(target_user.id)
+    nation: Optional[pnw_api.Nation] = None
+
+    if row is not None:
+        try:
+            nation = await bot.pnw.get_nation(row["nation_id"])
+        except Exception:
+            log.exception("PnW API error fetching nation for war range targets")
+
+    if nation is None:
+        # Fall back to PnW discord tag lookup.
+        try:
+            nation = await bot.pnw.get_nation_by_discord_tag(target_user.name)
+            if nation is not None and not PnWClient.discord_matches(
+                nation.discord_tag, target_user.name
+            ):
+                nation = None
+        except Exception:
+            pass
+
+    if nation is None:
+        mention = target_user.mention if user else "You"
+        await interaction.followup.send(
+            embed=_info_embed(
+                f"ℹ️ {mention} {'is' if user else 'are'} not registered. "
+                "Use `/register <nation_id>` to link your Discord account."
+            )
+        )
+        return
+
+    alliance_ids = bot.db.get_slots_alliances(guild_id)
+    if not alliance_ids:
+        await interaction.followup.send(
+            embed=_info_embed(
+                "ℹ️ No alliances configured. An admin can use `/config slots set` to set them up."
+            )
+        )
+        return
+
+    min_score = nation.score * WAR_RANGE_MIN_RATIO
+    max_score = nation.score * WAR_RANGE_MAX_RATIO
+
+    try:
+        members, war_counts = await asyncio.gather(
+            bot.pnw.get_alliance_members(alliance_ids),
+            bot.pnw.get_active_def_war_counts_by_alliance(alliance_ids),
+        )
+    except Exception as exc:
+        log.exception("PnW API error while fetching data for war range targets")
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    # Filter: in war range AND has at least one open defensive slot.
+    targets = [
+        (n, war_counts.get(n.nation_id, 0))
+        for n in members
+        if min_score <= n.score <= max_score
+        and war_counts.get(n.nation_id, 0) < MAX_DEFENSIVE_SLOTS
+    ]
+
+    if not targets:
+        await interaction.followup.send(
+            embed=_info_embed(
+                f"ℹ️ No nations from the configured alliance(s) are in your war range "
+                f"({min_score:,.0f}–{max_score:,.0f} score) with open defensive slots."
+            )
+        )
+        return
+
+    # Sort by city count descending (most cities first — most valuable targets).
+    targets.sort(key=lambda t: t[0].num_cities, reverse=True)
+
+    multi_alliance = len({n.alliance_id for n, _ in targets}) > 1
+    embed = _build_war_range_embed(nation, targets, page=0, multi_alliance=multi_alliance)
+    view = WarRangeView(nation, targets, multi_alliance, page=0)
+    await interaction.followup.send(embed=embed, view=view)
 
 
 _HELP_COMMANDS = [
@@ -2676,9 +3039,11 @@ _HELP_COMMANDS = [
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
-    ("/damage leaderboard", "Show loot leaderboard (money + resources at market price from ground/beige victories, past 7 days) with infra damage."),
+    ("/damage leaderboard", "Show all alliance members' loot & damage (money + resources at market price, infra destroyed) for the past 7 days. Includes members with no wars at zero."),
     ("/spy target find <alliances>", "Find nations in given alliances (comma-separated names or IDs) sorted by spy capacity (cities)."),
     ("/missile targets find", "Top 20 nations in the /slots alliances with the most cities that have open defensive slots."),
+    ("/infra <current> <target> [cities] [projects]", "Calculate infrastructure purchase cost with optional project discounts."),
+    ("/war range targets [user]", "Show /slots nations in your (or another user's) war range with open defensive slots."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/help", "Show this help message."),
