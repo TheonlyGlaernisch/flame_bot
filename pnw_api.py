@@ -611,8 +611,6 @@ class PnWClient:
         """
         results: dict[int, dict[str, Any]] = {}
         war_ids: list[int] = []
-        # Nation IDs of members who appeared as defenders in at least one war.
-        def_members: set[int] = set()
 
         def _make_entry(nation_name: str, num_cities: int) -> dict[str, Any]:
             return {
@@ -740,7 +738,6 @@ class PnWClient:
                         entry["def_alum_used"] += float(war.get("att_alum_used") or 0)
                         entry["def_steel_used"] += float(war.get("att_steel_used") or 0)
 
-                        def_members.add(def_id)
                         if war_id and war_id not in war_ids:
                             war_ids.append(war_id)
 
@@ -757,8 +754,8 @@ class PnWClient:
         # Phase 2: collect resource loot from individual attack records.
         # We look for GROUND attacks (per-city loot on a ground battle win)
         # and VICTORY attacks (beige loot when resistance hits 0).
-        # For offensive wars the winner is identified by victor == att_id;
-        # for defensive wars the winner is identified by victor == def_id.
+        # Loot only goes to the attacker of each individual attack — only
+        # offensive attacks (victor == att_id) yield loot.
         # ------------------------------------------------------------------
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT
         _BATCH = _WARATTACKS_BATCH_SIZE
@@ -806,23 +803,14 @@ class PnWClient:
                         continue
 
                     att_id = int(attack.get("att_id") or 0)
-                    def_id = int(attack.get("def_id") or 0)
 
-                    # Offensive loot: our attacker won this attack.
+                    # Loot only goes to the attacker of the individual attack.
                     if att_id in results and victor == att_id:
                         gas, mun, alum, steel = _parse_resource_loot(loot_info)
                         results[att_id]["gas_looted"] += gas
                         results[att_id]["mun_looted"] += mun
                         results[att_id]["alum_looted"] += alum
                         results[att_id]["steel_looted"] += steel
-
-                    # Defensive loot: our defender won this attack.
-                    elif def_id in def_members and victor == def_id:
-                        gas, mun, alum, steel = _parse_resource_loot(loot_info)
-                        results[def_id]["gas_looted"] += gas
-                        results[def_id]["mun_looted"] += mun
-                        results[def_id]["alum_looted"] += alum
-                        results[def_id]["steel_looted"] += steel
 
                 if not atk_has_more:
                     break
