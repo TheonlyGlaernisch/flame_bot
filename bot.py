@@ -2350,10 +2350,11 @@ def _build_spy_targets_page(
         alliance_tag = (
             f" [{nation.alliance_name}]" if multi_alliance and nation.alliance_name else ""
         )
+        spy_str = f" | 🕵️ {nation.spies}" if nation.spies >= 0 else " | 🕵️ ?"
         line = (
             f"`{i:>3}.` [{nation.nation_name}]({_nation_url(nation.nation_id)})"
             f"{beige}{alliance_tag}"
-            f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
+            f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}{spy_str}"
         )
         lines.append(line)
 
@@ -2592,9 +2593,12 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
         return
 
     try:
-        members = await bot.pnw.get_alliance_members(alliance_ids)
+        members, war_counts = await asyncio.gather(
+            bot.pnw.get_alliance_members(alliance_ids),
+            bot.pnw.get_active_def_war_counts_by_alliance(alliance_ids),
+        )
     except Exception as exc:
-        log.exception("PnW API error while fetching alliance members for missile targets")
+        log.exception("PnW API error while fetching data for missile targets")
         await interaction.followup.send(
             embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
         )
@@ -2605,13 +2609,6 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
             embed=_info_embed("ℹ️ No active members found for the configured alliance(s).")
         )
         return
-
-    nation_ids = [n.nation_id for n in members]
-    try:
-        war_counts = await bot.pnw.get_active_war_counts(nation_ids)
-    except Exception:
-        log.exception("PnW API error while fetching war counts for missile targets")
-        war_counts = {}
 
     # Keep only nations that have at least one open defensive slot
     open_slot_nations = [
