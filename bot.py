@@ -188,6 +188,37 @@ async def _check_gov_access(interaction: discord.Interaction, *role_keys: str) -
     )
 
 
+async def _check_member_access(interaction: discord.Interaction) -> bool:
+    """Return True if the caller is allowed to use member-gated commands.
+
+    Passes if:
+    - Caller is a guild admin.
+    - The "member" role has not been configured yet (keeps backward compatibility).
+    - Caller holds the configured "member" role.
+    - Caller holds any configured gov role (gov members are implicitly members).
+    """
+    guild_id = interaction.guild_id or 0
+    member = interaction.guild and interaction.guild.get_member(interaction.user.id)
+    if member and member.guild_permissions.administrator:
+        return True
+    if not member:
+        return False
+    gov_roles = bot.db.get_gov_roles(guild_id)
+    member_role_id = gov_roles.get("member")
+    # If the member role is not configured, don't restrict access.
+    if not member_role_id:
+        return True
+    member_role_ids = {r.id for r in member.roles}
+    if member_role_id in member_role_ids:
+        return True
+    # Also pass if the user holds any gov role.
+    _GOV_KEYS = ("leader", "2ic", "econ", "econ_gov", "milcom", "milcom_gov", "ia", "ia_asst", "gov")
+    return any(
+        (role_id := gov_roles.get(k)) and role_id in member_role_ids
+        for k in _GOV_KEYS
+    )
+
+
 def _format_discord_identifier(row: object) -> str:
     """Return the stored Discord username, falling back to the numeric ID."""
     return row["discord_username"] or row["discord_id"]
@@ -958,6 +989,13 @@ def _parse_alliance_ids(raw: str) -> list[int] | None:
 async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) -> None:
     await interaction.response.defer(ephemeral=True)
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            "❌ You need the **Member** role to use this command.",
+            ephemeral=True,
+        )
+        return
+
     if not await _check_gov_access(interaction, "milcom", "milcom_gov"):
         await interaction.followup.send(
             "❌ You need the **Administrator** or **Military Command** role to use this command.",
@@ -988,6 +1026,14 @@ async def config_slots_set(interaction: discord.Interaction, alliance_ids: str) 
 )
 async def config_slots_show(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            "❌ You need the **Member** role to use this command.",
+            ephemeral=True,
+        )
+        return
+
     guild_id = interaction.guild_id or 0
     ids = bot.db.get_slots_alliances(guild_id)
     if not ids:
@@ -1008,6 +1054,13 @@ async def config_slots_show(interaction: discord.Interaction) -> None:
 )
 async def config_slots_clear(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            "❌ You need the **Member** role to use this command.",
+            ephemeral=True,
+        )
+        return
 
     if not await _check_gov_access(interaction, "milcom", "milcom_gov"):
         await interaction.followup.send(
@@ -1167,6 +1220,12 @@ class SlotsView(discord.ui.View):
 async def slots(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
     guild_id = interaction.guild_id or 0
     alliance_ids = bot.db.get_slots_alliances(guild_id)
 
@@ -1220,6 +1279,7 @@ _GOV_DEPT_LABELS: dict[str, str] = {
     "ia": "Internal Affairs",
     "ia_asst": "Internal Affairs Assistant",
     "gov": "Basic Gov",
+    "member": "Member",
 }
 
 roles_group = app_commands.Group(
@@ -1243,6 +1303,7 @@ bot.tree.add_command(roles_group)
     ia="Role that counts as Internal Affairs.",
     ia_asst="Role that counts as Internal Affairs Assistant.",
     gov="Role that counts as Basic Gov.",
+    member="Role required to use most bot commands (not shown in /gov).",
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def roles_setup(
@@ -1256,6 +1317,7 @@ async def roles_setup(
     ia: discord.Role | None = None,
     ia_asst: discord.Role | None = None,
     gov: discord.Role | None = None,
+    member: discord.Role | None = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
 
@@ -1272,6 +1334,7 @@ async def roles_setup(
         "ia": ia.id if ia else current["ia"],
         "ia_asst": ia_asst.id if ia_asst else current["ia_asst"],
         "gov": gov.id if gov else current["gov"],
+        "member": member.id if member else current["member"],
     }
     bot.db.set_gov_roles(guild_id, updates)
     log.info("Guild %d: gov roles updated to %s by %s", guild_id, updates, interaction.user)
@@ -1311,6 +1374,14 @@ async def roles_setup_error(
 )
 async def roles_show(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            "❌ You need the **Member** role to use this command.",
+            ephemeral=True,
+        )
+        return
+
     guild_id = interaction.guild_id or 0
     config_roles = bot.db.get_gov_roles(guild_id)
     guild = interaction.guild
@@ -1348,7 +1419,7 @@ _GOV_DEPT_EMOJI: dict[str, str] = {
 }
 
 # Departments hidden from the /gov embed (still configurable via /roles setup).
-_GOV_HIDDEN_FROM_EMBED: frozenset[str] = frozenset({"gov"})
+_GOV_HIDDEN_FROM_EMBED: frozenset[str] = frozenset({"gov", "member"})
 
 
 @bot.tree.command(
@@ -1357,6 +1428,13 @@ _GOV_HIDDEN_FROM_EMBED: frozenset[str] = frozenset({"gov"})
 )
 async def gov(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
 
     guild = interaction.guild
     if guild is None:
@@ -1475,6 +1553,13 @@ async def send_resources(
     aluminum: float | None = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
 
     # Check that the invoking member holds the configured econ role (admins bypass).
     guild_id = interaction.guild_id or 0
@@ -1599,6 +1684,13 @@ async def setup_grant_channel(
 ) -> None:
     await interaction.response.defer(ephemeral=True)
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
+
     if not await _check_gov_access(interaction, "econ", "econ_gov", "ia", "ia_asst"):
         await interaction.followup.send(
             embed=_error_embed(
@@ -1664,6 +1756,13 @@ async def request_grant(
     aluminum: float | None = None,
 ) -> None:
     await interaction.response.defer(ephemeral=True)
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
 
     guild_id = interaction.guild_id or 0
 
@@ -1963,6 +2062,13 @@ async def admin_sync_error(
 )
 async def color_check(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
 
     guild_id = interaction.guild_id or 0
     alliance_id = bot.db.get_alliance_id(guild_id)
@@ -2286,6 +2392,13 @@ async def damage_command(
 ) -> None:
     await interaction.response.defer()
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
+
     guild_id = interaction.guild_id or 0
     alliance_id = bot.db.get_alliance_id(guild_id)
     if alliance_id is None:
@@ -2482,6 +2595,13 @@ spy_group.add_command(spy_target_group)
 async def spy_target_find(interaction: discord.Interaction, alliances: str) -> None:
     await interaction.response.defer()
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
+
     names = [n.strip() for n in alliances.split(",") if n.strip()]
     if not names:
         await interaction.followup.send(
@@ -2624,6 +2744,13 @@ missile_group.add_command(missile_targets_group)
 async def missile_target_find(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
+
     guild_id = interaction.guild_id or 0
     alliance_ids = bot.db.get_slots_alliances(guild_id)
 
@@ -2727,6 +2854,13 @@ async def infra_cost_command(
     advanced_urban_planning: bool = False,
 ) -> None:
     await interaction.response.defer()
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
 
     if cities < 1:
         await interaction.followup.send(
@@ -2939,6 +3073,13 @@ async def war_range_targets(
 ) -> None:
     await interaction.response.defer()
 
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
+
     target_user = user or interaction.user
     guild_id = interaction.guild_id or 0
 
@@ -3049,6 +3190,13 @@ async def city_cost_command(
     government_support_agency: bool = False,
 ) -> None:
     await interaction.response.defer()
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
 
     if current < 0:
         await interaction.followup.send(
