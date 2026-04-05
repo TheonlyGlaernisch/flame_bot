@@ -3409,7 +3409,7 @@ async def _handle_revenue(
         text=(
             f"Food: {rev.food_production:,.2f} prod − {rev.food_consumption:,.2f} use  ·  "
             f"Season month: {game_info.game_month}  ·  "
-            f"Gross (before tax)"
+            f"Money net of improvement upkeep, before military upkeep & tax"
         )
     )
 

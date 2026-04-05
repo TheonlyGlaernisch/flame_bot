@@ -19,13 +19,13 @@ log = logging.getLogger(__name__)
 # PnW loot_info is a human-readable string like:
 #   "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel…"
 # We extract the four war-relevant manufactured resources using case-insensitive
-# patterns that tolerate comma-formatted numbers (e.g. "1,234") with up to two
-# decimal places.
-_LOOT_MONEY_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+money", re.IGNORECASE)
-_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+gasoline", re.IGNORECASE)
-_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+munitions", re.IGNORECASE)
-_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+aluminum", re.IGNORECASE)
-_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+steel", re.IGNORECASE)
+# patterns that tolerate comma-formatted numbers (e.g. "1,234") with any number
+# of decimal places (PnW may use 2 or 3 decimal places depending on context).
+_LOOT_MONEY_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+money", re.IGNORECASE)
+_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+gasoline", re.IGNORECASE)
+_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+munitions", re.IGNORECASE)
+_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+aluminum", re.IGNORECASE)
+_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+steel", re.IGNORECASE)
 
 # Attack types that yield resource loot when the attacker wins.
 # GROUND: per-city loot on a successful ground battle.
@@ -1114,8 +1114,12 @@ class PnWClient:
                         continue
 
                     attack_type = str(attack.get("type") or "")
+                    # VICTORY only occurs when the war attacker's resistance
+                    # reaches 0, meaning the attacker always wins.  The API
+                    # sometimes returns victor=0 for this synthetic event, so
+                    # don't rely on the victor field for VICTORY type.
                     victor = int(attack.get("victor") or 0)
-                    won = bool(victor and victor == att_id)
+                    won = attack_type == _VICTORY or bool(victor and victor == att_id)
 
                     # Enemy resource consumption defending against this attack
                     # (counted regardless of outcome — defender uses resources either way).
@@ -1509,7 +1513,7 @@ def _normalize_continent(raw: str) -> str:
     return mapping.get(raw.strip().lower(), raw.strip().upper()[:2])
 
 
-def _city_commerce_rate(city: City, has_itc: bool) -> float:
+def _city_commerce_rate(city: City, has_itc: bool, has_sptp: bool = False) -> float:
     """Return the commerce % contributed by a single city's improvements."""
     rate = (
         city.supermarket * 3.5
@@ -1520,6 +1524,8 @@ def _city_commerce_rate(city: City, has_itc: bool) -> float:
     )
     if has_itc:
         rate += 2.0
+    if has_sptp:
+        rate += 4.0
     return min(100.0, rate)
 
 
@@ -1635,6 +1641,42 @@ def _food_prod_per_city(
     return prod * season * rad_factor
 
 
+# Improvement upkeep costs (money per day, sourced from PnW wiki).
+# Note: hospital and police_station are not in the City model so are excluded.
+_UPKEEP: dict[str, float] = {
+    "coal_power":         1_200.0,
+    "oil_power":          1_800.0,
+    "nuclear_power":     10_500.0,
+    "wind_power":           500.0,
+    "coal_mine":            400.0,
+    "oil_well":             600.0,
+    "uranium_mine":       5_000.0,
+    "iron_mine":          1_600.0,
+    "bauxite_mine":       1_600.0,
+    "lead_mine":          1_500.0,
+    "farm":                 300.0,
+    "gasrefinery":        4_000.0,
+    "aluminum_refinery":  2_500.0,
+    "steel_mill":         9_000.0,
+    "munitions_factory":  8_750.0,
+    "supermarket":          600.0,
+    "bank":               1_800.0,
+    "shopping_mall":      5_400.0,
+    "stadium":           12_150.0,
+    "subway":             3_250.0,
+}
+
+
+def _improvement_upkeep(city: City) -> float:
+    """Return the total daily money upkeep for all tracked improvements in *city*."""
+    total = 0.0
+    for attr, daily_cost in _UPKEEP.items():
+        count = getattr(city, attr, 0)
+        if count:
+            total += count * daily_cost
+    return total
+
+
 def compute_nation_revenue(
     nation: Nation,
     cities: list[City],
@@ -1653,11 +1695,13 @@ def compute_nation_revenue(
     pb = set(nation.projects_built)
     has_itc = "ITC" in pb
     has_mi  = "MI"  in pb
+    has_ala = "ALA" in pb   # Arable Land Agency → +20 % food production
     has_uep = "UEP" in pb
     has_iw  = "IW"  in pb   # Iron Works → steel bonus
     has_bw  = "BW"  in pb   # Bauxite Works → aluminum bonus
     has_egr = "EGR" in pb   # Emergency Gasoline Reserve → ×2 gasoline
     has_as  = "AS"  in pb   # Arms Stockpile → ×1.2 munitions
+    has_sptp = "SPTP" in pb  # Specialized Police Training Program → +4 % commerce per city
 
     continent = _normalize_continent(nation.continent or "NA")
     cont_rad = game_info.radiation_for(continent)
@@ -1672,7 +1716,7 @@ def compute_nation_revenue(
     total_commerce = 0.0
 
     for city in cities:
-        commerce = _city_commerce_rate(city, has_itc)
+        commerce = _city_commerce_rate(city, has_itc, has_sptp)
         total_commerce += commerce
 
         # Money (gross, before tax)
@@ -1722,8 +1766,19 @@ def compute_nation_revenue(
             rev.oil     -= _coal_oil_power_usage(city.infrastructure, city.oil_power)
             rev.uranium -= _nuclear_power_usage(city.infrastructure, city.nuclear_power)
 
-    # Food consumption (peacetime)
-    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 750.0
+        # Improvement upkeep (money cost per day)
+        rev.money -= _improvement_upkeep(city)
+
+    # ALA: Arable Land Agency adds 20 % to total food production.
+    if has_ala:
+        rev.food_production *= 1.2
+
+    # Food consumption.
+    # Rate: 1 food per 850 population per turn.
+    # Soldiers: 1 per 500 during wartime (any active war), 1 per 750 during peacetime.
+    at_war = (nation.offensive_wars + nation.defensive_wars) > 0
+    soldier_divisor = 500.0 if at_war else 750.0
+    rev.food_consumption = nation.population / 850.0 + nation.soldiers / soldier_divisor
 
     # Color bloc turn bonus (gray nations get no bonus)
     color_key = (nation.color or "").lower()
