@@ -1513,7 +1513,7 @@ def _normalize_continent(raw: str) -> str:
     return mapping.get(raw.strip().lower(), raw.strip().upper()[:2])
 
 
-def _city_commerce_rate(city: City, has_itc: bool) -> float:
+def _city_commerce_rate(city: City, has_itc: bool, has_sptp: bool = False) -> float:
     """Return the commerce % contributed by a single city's improvements."""
     rate = (
         city.supermarket * 3.5
@@ -1524,6 +1524,8 @@ def _city_commerce_rate(city: City, has_itc: bool) -> float:
     )
     if has_itc:
         rate += 2.0
+    if has_sptp:
+        rate += 4.0
     return min(100.0, rate)
 
 
@@ -1699,6 +1701,7 @@ def compute_nation_revenue(
     has_bw  = "BW"  in pb   # Bauxite Works → aluminum bonus
     has_egr = "EGR" in pb   # Emergency Gasoline Reserve → ×2 gasoline
     has_as  = "AS"  in pb   # Arms Stockpile → ×1.2 munitions
+    has_sptp = "SPTP" in pb  # Specialized Police Training Program → +4 % commerce per city
 
     continent = _normalize_continent(nation.continent or "NA")
     cont_rad = game_info.radiation_for(continent)
@@ -1713,7 +1716,7 @@ def compute_nation_revenue(
     total_commerce = 0.0
 
     for city in cities:
-        commerce = _city_commerce_rate(city, has_itc)
+        commerce = _city_commerce_rate(city, has_itc, has_sptp)
         total_commerce += commerce
 
         # Money (gross, before tax)
