@@ -1192,7 +1192,7 @@ class TestParseResourceLoot:
         loot_info = (
             "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel from the nation."
         )
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 3.0
         assert mun == 2.0
         assert alum == 1.0
@@ -1200,7 +1200,7 @@ class TestParseResourceLoot:
 
     def test_comma_formatted_numbers(self):
         loot_info = "looted 1,234 Gasoline, 5,678 Munitions, 900 Aluminum, 100 Steel."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 1234.0
         assert mun == 5678.0
         assert alum == 900.0
@@ -1208,29 +1208,29 @@ class TestParseResourceLoot:
 
     def test_partial_resources_missing_values_default_to_zero(self):
         loot_info = "The attacking forces looted 5 Steel from the nation."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 0.0
         assert mun == 0.0
         assert alum == 0.0
         assert steel == 5.0
 
     def test_case_insensitive(self):
-        gas, _, _, _ = _parse_resource_loot("looted 10 GASOLINE")
+        _, gas, _, _, _ = _parse_resource_loot("looted 10 GASOLINE")
         assert gas == 10.0
-        _, mun, _, _ = _parse_resource_loot("looted 7 munitions")
+        _, _, mun, _, _ = _parse_resource_loot("looted 7 munitions")
         assert mun == 7.0
 
     def test_empty_string_returns_all_zeros(self):
-        gas, mun, alum, steel = _parse_resource_loot("")
+        _, gas, mun, alum, steel = _parse_resource_loot("")
         assert gas == mun == alum == steel == 0.0
 
     def test_no_match_returns_zeros(self):
-        gas, mun, alum, steel = _parse_resource_loot("The forces attacked but looted nothing.")
+        _, gas, mun, alum, steel = _parse_resource_loot("The forces attacked but looted nothing.")
         assert gas == mun == alum == steel == 0.0
 
     def test_decimal_quantities(self):
         loot_info = "looted 3.5 Gasoline, 2.25 Munitions."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 3.5
         assert mun == 2.25
         assert alum == 0.0
@@ -1238,7 +1238,7 @@ class TestParseResourceLoot:
 
     def test_zero_quantity(self):
         loot_info = "looted 0 Gasoline, 0 Munitions, 0 Aluminum, 0 Steel."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 0.0
         assert mun == 0.0
         assert alum == 0.0

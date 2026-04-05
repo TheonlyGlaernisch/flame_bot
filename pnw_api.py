@@ -1084,10 +1084,15 @@ class PnWClient:
                             type
                             victor
                             money_stolen
+                            money_looted
                             infra_destroyed_value
                             loot_info
                             def_gas_used
                             def_mun_used
+                            gasoline_looted
+                            munitions_looted
+                            aluminum_looted
+                            steel_looted
                         }
                         paginatorInfo {
                             hasMorePages
@@ -1136,16 +1141,32 @@ class PnWClient:
                         attack.get("infra_destroyed_value") or 0
                     )
 
-                    # Parse loot from loot_info string (covers GROUND and VICTORY).
-                    loot_str = attack.get("loot_info") or ""
-                    if attack_type in _LOOT_TYPES and loot_str:
-                        loot_money, gas, mun, alum, steel = _parse_resource_loot(loot_str)
+                    # Resource loot: prefer structured numeric fields from the API;
+                    # fall back to parsing the loot_info text string when they are
+                    # absent (e.g. older API versions or test stubs).
+                    if attack_type in _LOOT_TYPES:
+                        gas = float(attack.get("gasoline_looted") or 0)
+                        mun = float(attack.get("munitions_looted") or 0)
+                        alum = float(attack.get("aluminum_looted") or 0)
+                        steel = float(attack.get("steel_looted") or 0)
+                        if not (gas or mun or alum or steel):
+                            loot_str = attack.get("loot_info") or ""
+                            if loot_str:
+                                _, gas, mun, alum, steel = _parse_resource_loot(loot_str)
                     else:
-                        loot_money, gas, mun, alum, steel = 0.0, 0.0, 0.0, 0.0, 0.0
+                        gas = mun = alum = steel = 0.0
 
-                    # money_stolen covers per-city ground loot; loot_info covers
+                    # money_stolen covers per-city ground loot; money_looted covers
                     # VICTORY beige loot (which may not populate money_stolen).
-                    money = float(attack.get("money_stolen") or 0) or loot_money
+                    # Fall back to loot_info text parsing when neither field is set.
+                    money = float(attack.get("money_stolen") or 0) or float(
+                        attack.get("money_looted") or 0
+                    )
+                    if not money:
+                        loot_str = attack.get("loot_info") or ""
+                        if loot_str:
+                            loot_money, *_ = _parse_resource_loot(loot_str)
+                            money = loot_money
                     if money > 0:
                         results[att_id]["money_looted"] += money
 
