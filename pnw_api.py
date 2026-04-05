@@ -1726,9 +1726,9 @@ def compute_nation_revenue(
             rev.oil     -= _coal_oil_power_usage(city.infrastructure, city.oil_power)
             rev.uranium -= _nuclear_power_usage(city.infrastructure, city.nuclear_power)
 
-    # Food consumption (peacetime, per day = per-turn rate × 12 turns/day).
-    # Per-turn rate: 1 food per 1 000 population + 1 food per 750 soldiers.
-    rev.food_consumption = (nation.population / 1000.0 + nation.soldiers / 750.0) * _TURNS_PER_DAY
+    # Food consumption (peacetime).
+    # Rate: 1 food per 1 000 population + 1 food per 500 soldiers (per turn).
+    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 500.0
 
     # Color bloc turn bonus (gray nations get no bonus)
     color_key = (nation.color or "").lower()
