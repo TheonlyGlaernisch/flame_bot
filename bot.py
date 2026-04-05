@@ -2467,6 +2467,10 @@ async def damage_command(
                 "def_mun_used": 0.0,
                 "def_alum_used": 0.0,
                 "def_steel_used": 0.0,
+                "def_soldiers_killed": 0.0,
+                "def_tanks_killed": 0.0,
+                "def_aircraft_killed": 0.0,
+                "def_ships_sunk": 0.0,
             }
         else:
             # Update city count to current value from the member query.
