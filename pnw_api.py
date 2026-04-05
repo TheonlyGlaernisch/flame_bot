@@ -1639,6 +1639,42 @@ def _food_prod_per_city(
     return prod * season * rad_factor
 
 
+# Improvement upkeep costs (money per day, sourced from PnW wiki).
+# Note: hospital and police_station are not in the City model so are excluded.
+_UPKEEP: dict[str, float] = {
+    "coal_power":         1_200.0,
+    "oil_power":          1_800.0,
+    "nuclear_power":     10_500.0,
+    "wind_power":           500.0,
+    "coal_mine":            400.0,
+    "oil_well":             600.0,
+    "uranium_mine":       5_000.0,
+    "iron_mine":          1_600.0,
+    "bauxite_mine":       1_600.0,
+    "lead_mine":          1_500.0,
+    "farm":                 300.0,
+    "gasrefinery":        4_000.0,
+    "aluminum_refinery":  2_500.0,
+    "steel_mill":         9_000.0,
+    "munitions_factory":  8_750.0,
+    "supermarket":          600.0,
+    "bank":               1_800.0,
+    "shopping_mall":      5_400.0,
+    "stadium":           12_150.0,
+    "subway":             3_250.0,
+}
+
+
+def _improvement_upkeep(city: City) -> float:
+    """Return the total daily money upkeep for all tracked improvements in *city*."""
+    total = 0.0
+    for attr, daily_cost in _UPKEEP.items():
+        count = getattr(city, attr, 0)
+        if count:
+            total += count * daily_cost
+    return total
+
+
 def compute_nation_revenue(
     nation: Nation,
     cities: list[City],
@@ -1657,6 +1693,7 @@ def compute_nation_revenue(
     pb = set(nation.projects_built)
     has_itc = "ITC" in pb
     has_mi  = "MI"  in pb
+    has_ala = "ALA" in pb   # Arable Land Agency → +20 % food production
     has_uep = "UEP" in pb
     has_iw  = "IW"  in pb   # Iron Works → steel bonus
     has_bw  = "BW"  in pb   # Bauxite Works → aluminum bonus
@@ -1726,9 +1763,16 @@ def compute_nation_revenue(
             rev.oil     -= _coal_oil_power_usage(city.infrastructure, city.oil_power)
             rev.uranium -= _nuclear_power_usage(city.infrastructure, city.nuclear_power)
 
+        # Improvement upkeep (money cost per day)
+        rev.money -= _improvement_upkeep(city)
+
+    # ALA: Arable Land Agency adds 20 % to total food production.
+    if has_ala:
+        rev.food_production *= 1.2
+
     # Food consumption (peacetime).
-    # Rate: 1 food per 1 000 population + 1 food per 500 soldiers (per turn).
-    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 500.0
+    # Rate: 1 food per 1 000 population + 1 food per 750 soldiers (per turn).
+    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 750.0
 
     # Color bloc turn bonus (gray nations get no bonus)
     color_key = (nation.color or "").lower()
