@@ -695,8 +695,10 @@ class PnWClient:
                     population
                     domestic_policy
                     war_policy
-                    offensive_wars
-                    defensive_wars
+                    wars(active: true) {{
+                        id
+                        att_id
+                    }}
                     cities {{
                         {_CITY_FIELDS}
                     }}
@@ -714,8 +716,11 @@ class PnWClient:
         nation.population = int(n.get("population") or 0)
         nation.domestic_policy = n.get("domestic_policy", "") or ""
         nation.war_policy = n.get("war_policy", "") or ""
-        nation.offensive_wars = int(n.get("offensive_wars") or 0)
-        nation.defensive_wars = int(n.get("defensive_wars") or 0)
+        active_wars = n.get("wars") or []
+        nation.offensive_wars = sum(
+            1 for w in active_wars if int(w.get("att_id") or 0) == nation_id
+        )
+        nation.defensive_wars = len(active_wars) - nation.offensive_wars
         cities = [self._parse_city(c) for c in (n.get("cities") or [])]
         return nation, cities
 
@@ -877,11 +882,13 @@ class PnWClient:
         doing a counterattack).
 
         Attribution rules per attack:
-          • def_*_used (all attacks where att_id is ours) → enemy resource cost
-          • att_infra_destroyed_value (winning attacks)   → infra_value
-          • money_stolen              (winning attacks)   → money_looted
-          • loot_info                 (winning GROUND / VICTORY) → resource loot
-          • loot_info on VICTORY                          → vict_* copies too
+          • def_gas_used / def_mun_used (all attacks) → enemy gas/mun cost
+            (def_alum_used / def_steel_used are war-level only, not per-attack)
+          • infra_destroyed_value     (winning attacks)   → infra_value
+          • money_stolen + money_looted (winning attacks) → money_looted
+            (money_stolen is 0 for VICTORY; money_looted covers VICTORY loot)
+          • gasoline/munitions/aluminum/steel_looted (winning attacks) → resource loot
+          • resource loot on VICTORY                  → vict_* copies too
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
@@ -898,8 +905,8 @@ class PnWClient:
             "vict_steel_looted": float, # steel looted specifically on beige
             "def_gas_used": float,   # gasoline the enemy spent defending our attacks
             "def_mun_used": float,   # munitions the enemy spent defending our attacks
-            "def_alum_used": float,  # aluminum the enemy spent defending our attacks
-            "def_steel_used": float, # steel the enemy spent defending our attacks
+            "def_alum_used": float,  # always 0 (not available per-attack in API)
+            "def_steel_used": float, # always 0 (not available per-attack in API)
         }.
         """
         results: dict[int, dict[str, Any]] = {}
@@ -1059,13 +1066,15 @@ class PnWClient:
                             att_id
                             type
                             victor
-                            loot_info
                             money_stolen
-                            att_infra_destroyed_value
+                            money_looted
+                            infra_destroyed_value
+                            gasoline_looted
+                            munitions_looted
+                            aluminum_looted
+                            steel_looted
                             def_gas_used
                             def_mun_used
-                            def_alum_used
-                            def_steel_used
                         }
                         paginatorInfo {
                             hasMorePages
@@ -1097,41 +1106,45 @@ class PnWClient:
 
                     # Enemy resource consumption defending against this attack
                     # (counted regardless of outcome — defender uses resources either way).
+                    # Note: def_alum_used and def_steel_used are only available at the
+                    # war level, not per-attack, so they are not tracked here.
                     results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
                     results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
-                    results[att_id]["def_alum_used"] += float(attack.get("def_alum_used") or 0)
-                    results[att_id]["def_steel_used"] += float(attack.get("def_steel_used") or 0)
 
                     if not won:
                         continue
 
                     # Infra destroyed and money looted on a winning attack.
                     results[att_id]["infra_value"] += float(
-                        attack.get("att_infra_destroyed_value") or 0
+                        attack.get("infra_destroyed_value") or 0
                     )
-                    money_stolen = float(attack.get("money_stolen") or 0)
-                    if money_stolen > 0:
-                        results[att_id]["money_looted"] += money_stolen
+                    # money_stolen is 0 for VICTORY/ALLIANCELOOT; money_looted covers those.
+                    money = float(attack.get("money_stolen") or 0) + float(
+                        attack.get("money_looted") or 0
+                    )
+                    if money > 0:
+                        results[att_id]["money_looted"] += money
 
-                    # Resource loot from loot_info text (GROUND and VICTORY only).
-                    if attack_type in _LOOT_TYPES:
-                        loot_info = attack.get("loot_info") or ""
-                        if loot_info:
-                            gas, mun, alum, steel = _parse_resource_loot(loot_info)
-                            results[att_id]["gas_looted"] += gas
-                            results[att_id]["mun_looted"] += mun
-                            results[att_id]["alum_looted"] += alum
-                            results[att_id]["steel_looted"] += steel
+                    # Resource loot from dedicated per-attack fields (GROUND and VICTORY).
+                    gas = float(attack.get("gasoline_looted") or 0)
+                    mun = float(attack.get("munitions_looted") or 0)
+                    alum = float(attack.get("aluminum_looted") or 0)
+                    steel = float(attack.get("steel_looted") or 0)
+                    if gas or mun or alum or steel:
+                        results[att_id]["gas_looted"] += gas
+                        results[att_id]["mun_looted"] += mun
+                        results[att_id]["alum_looted"] += alum
+                        results[att_id]["steel_looted"] += steel
 
-                            # VICTORY loot also counts as resource damage dealt:
-                            # the enemy's stockpile is permanently reduced by the
-                            # looted amount, so track it separately for the
-                            # res-damage column as well as the loot column.
-                            if attack_type == _VICTORY:
-                                results[att_id]["vict_gas_looted"] += gas
-                                results[att_id]["vict_mun_looted"] += mun
-                                results[att_id]["vict_alum_looted"] += alum
-                                results[att_id]["vict_steel_looted"] += steel
+                        # VICTORY loot also counts as resource damage dealt:
+                        # the enemy's stockpile is permanently reduced by the
+                        # looted amount, so track it separately for the
+                        # res-damage column as well as the loot column.
+                        if attack_type == _VICTORY:
+                            results[att_id]["vict_gas_looted"] += gas
+                            results[att_id]["vict_mun_looted"] += mun
+                            results[att_id]["vict_alum_looted"] += alum
+                            results[att_id]["vict_steel_looted"] += steel
 
                 if not atk_has_more:
                     break

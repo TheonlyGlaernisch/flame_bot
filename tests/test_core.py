@@ -1316,12 +1316,14 @@ def _make_attack(
     attack_type: str = "AIRVINFRA",
     victor: str | None = None,
     money_stolen: float = 0.0,
-    loot_info: str = "",
-    att_infra_destroyed_value: float = 0.0,
+    money_looted: float = 0.0,
+    infra_destroyed_value: float = 0.0,
     def_gas_used: float = 0.0,
     def_mun_used: float = 0.0,
-    def_alum_used: float = 0.0,
-    def_steel_used: float = 0.0,
+    gasoline_looted: float = 0.0,
+    munitions_looted: float = 0.0,
+    aluminum_looted: float = 0.0,
+    steel_looted: float = 0.0,
 ) -> dict:
     """Build a per-attack dict matching the Phase-2 warattacks schema."""
     return {
@@ -1329,12 +1331,14 @@ def _make_attack(
         "type": attack_type,
         "victor": victor if victor is not None else att_id,
         "money_stolen": money_stolen,
-        "loot_info": loot_info,
-        "att_infra_destroyed_value": att_infra_destroyed_value,
+        "money_looted": money_looted,
+        "infra_destroyed_value": infra_destroyed_value,
         "def_gas_used": def_gas_used,
         "def_mun_used": def_mun_used,
-        "def_alum_used": def_alum_used,
-        "def_steel_used": def_steel_used,
+        "gasoline_looted": gasoline_looted,
+        "munitions_looted": munitions_looted,
+        "aluminum_looted": aluminum_looted,
+        "steel_looted": steel_looted,
     }
 
 
@@ -1353,12 +1357,10 @@ class TestGetAllianceDamage:
         attack = _make_attack(
             "100",
             attack_type="AIRVINFRA",
-            att_infra_destroyed_value=1_000_000.0,
+            infra_destroyed_value=1_000_000.0,
             money_stolen=500_000.0,
             def_gas_used=80.0,
             def_mun_used=40.0,
-            def_alum_used=8.0,
-            def_steel_used=4.0,
         )
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1376,8 +1378,8 @@ class TestGetAllianceDamage:
         assert entry["money_looted"] == 500_000.0
         assert entry["def_gas_used"] == 80.0
         assert entry["def_mun_used"] == 40.0
-        assert entry["def_alum_used"] == 8.0
-        assert entry["def_steel_used"] == 4.0
+        assert entry["def_alum_used"] == 0.0
+        assert entry["def_steel_used"] == 0.0
         # Enemy not in result
         assert 200 not in result
 
@@ -1390,12 +1392,10 @@ class TestGetAllianceDamage:
         counterattack = _make_attack(
             "100",  # our member counterattacking
             attack_type="GROUND",
-            att_infra_destroyed_value=800_000.0,
+            infra_destroyed_value=800_000.0,
             money_stolen=200_000.0,
             def_gas_used=60.0,
             def_mun_used=30.0,
-            def_alum_used=6.0,
-            def_steel_used=3.0,
         )
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1413,8 +1413,8 @@ class TestGetAllianceDamage:
         # def_*_used = enemy's resource cost defending against our counterattack
         assert entry["def_gas_used"] == 60.0
         assert entry["def_mun_used"] == 30.0
-        assert entry["def_alum_used"] == 6.0
-        assert entry["def_steel_used"] == 3.0
+        assert entry["def_alum_used"] == 0.0
+        assert entry["def_steel_used"] == 0.0
         # Enemy attacker not in result
         assert 200 not in result
 
@@ -1425,13 +1425,15 @@ class TestGetAllianceDamage:
             "att_id": "100",
             "type": "GROUND",
             "victor": "100",
-            "loot_info": "The attacking forces looted 5 Gasoline, 3 Munitions, 2 Aluminum, 1 Steel from the enemy.",
             "money_stolen": 0.0,
-            "att_infra_destroyed_value": 0.0,
+            "money_looted": 0.0,
+            "infra_destroyed_value": 0.0,
             "def_gas_used": 0.0,
             "def_mun_used": 0.0,
-            "def_alum_used": 0.0,
-            "def_steel_used": 0.0,
+            "gasoline_looted": 5.0,
+            "munitions_looted": 3.0,
+            "aluminum_looted": 2.0,
+            "steel_looted": 1.0,
         }
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1464,13 +1466,15 @@ class TestGetAllianceDamage:
             "att_id": "100",
             "type": "VICTORY",
             "victor": "100",
-            "loot_info": "The attacking forces looted 10 Gasoline, 5 Munitions, 3 Aluminum, 2 Steel from the enemy.",
-            "money_stolen": 1_000_000.0,
-            "att_infra_destroyed_value": 0.0,
+            "money_stolen": 0.0,
+            "money_looted": 1_000_000.0,
+            "infra_destroyed_value": 0.0,
             "def_gas_used": 0.0,
             "def_mun_used": 0.0,
-            "def_alum_used": 0.0,
-            "def_steel_used": 0.0,
+            "gasoline_looted": 10.0,
+            "munitions_looted": 5.0,
+            "aluminum_looted": 3.0,
+            "steel_looted": 2.0,
         }
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1506,13 +1510,15 @@ class TestGetAllianceDamage:
             "att_id": "100",
             "type": "GROUND",
             "victor": "200",
-            "loot_info": "The defending forces repelled the attack.",
             "money_stolen": 0.0,
-            "att_infra_destroyed_value": 0.0,
+            "money_looted": 0.0,
+            "infra_destroyed_value": 0.0,
             "def_gas_used": 0.0,
             "def_mun_used": 0.0,
-            "def_alum_used": 0.0,
-            "def_steel_used": 0.0,
+            "gasoline_looted": 0.0,
+            "munitions_looted": 0.0,
+            "aluminum_looted": 0.0,
+            "steel_looted": 0.0,
         }
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1544,7 +1550,7 @@ class TestGetAllianceDamage:
         """Defensive block is skipped for intra-alliance wars to avoid double-counting."""
         war = _make_war("1", "100", "101", "42", "42", "Attacker", "Defender", 10, 8)
         # Infra credited to attacker (100) via per-attack data.
-        attack = _make_attack("100", attack_type="AIRVINFRA", att_infra_destroyed_value=500_000.0)
+        attack = _make_attack("100", attack_type="AIRVINFRA", infra_destroyed_value=500_000.0)
         client = PnWClient(api_key="dummy")
         with patch.object(
             client,
@@ -1568,13 +1574,15 @@ class TestGetAllianceDamage:
             "att_id": "100",
             "type": "GROUND",
             "victor": "100",
-            "loot_info": "The attacking forces looted 5 Gasoline from the enemy.",
             "money_stolen": 0.0,
-            "att_infra_destroyed_value": 0.0,
+            "money_looted": 0.0,
+            "infra_destroyed_value": 0.0,
             "def_gas_used": 0.0,
             "def_mun_used": 0.0,
-            "def_alum_used": 0.0,
-            "def_steel_used": 0.0,
+            "gasoline_looted": 5.0,
+            "munitions_looted": 0.0,
+            "aluminum_looted": 0.0,
+            "steel_looted": 0.0,
         }
         # Simulate the same war returned on two pages (API edge case)
         page1 = _wars_response([war], has_more=True)
@@ -1599,10 +1607,10 @@ class TestGetAllianceDamage:
         war2 = _make_war("2", "100", "202", "42", "99", "Our Nation", "Enemy2", 10, 6)
         # Both wars are in the same Phase-2 batch; attacks provide all damage data.
         attack1 = _make_attack(
-            "100", att_infra_destroyed_value=1_000_000.0, money_stolen=200_000.0, def_gas_used=50.0
+            "100", infra_destroyed_value=1_000_000.0, money_stolen=200_000.0, def_gas_used=50.0
         )
         attack2 = _make_attack(
-            "100", att_infra_destroyed_value=500_000.0, money_stolen=100_000.0, def_gas_used=30.0
+            "100", infra_destroyed_value=500_000.0, money_stolen=100_000.0, def_gas_used=30.0
         )
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1628,13 +1636,15 @@ class TestGetAllianceDamage:
             "att_id": "200",
             "type": "GROUND",
             "victor": "200",
-            "loot_info": "The attacking forces looted 999 Gasoline from the enemy.",
             "money_stolen": 999_999.0,
-            "att_infra_destroyed_value": 0.0,
+            "money_looted": 0.0,
+            "infra_destroyed_value": 0.0,
             "def_gas_used": 0.0,
             "def_mun_used": 0.0,
-            "def_alum_used": 0.0,
-            "def_steel_used": 0.0,
+            "gasoline_looted": 999.0,
+            "munitions_looted": 0.0,
+            "aluminum_looted": 0.0,
+            "steel_looted": 0.0,
         }
         client = PnWClient(api_key="dummy")
         with patch.object(
