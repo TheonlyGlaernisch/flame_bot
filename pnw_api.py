@@ -149,6 +149,29 @@ class TradePrice:
             + steel * self.steel
         )
 
+    def unit_kill_value(
+        self,
+        *,
+        soldiers: float = 0.0,
+        tanks: float = 0.0,
+        aircraft: float = 0.0,
+        ships: float = 0.0,
+    ) -> float:
+        """Return the rebuild cost of destroyed enemy units at current market prices.
+
+        Unit rebuild costs (PnW game formulas):
+          Soldier:  $5
+          Tank:     $60  + 0.5 steel
+          Aircraft: $4,000 + 10 aluminum
+          Ship:     $50,000 + 30 steel
+        """
+        return (
+            soldiers * 5.0
+            + tanks * (60.0 + 0.5 * self.steel)
+            + aircraft * (4_000.0 + 10.0 * self.aluminum)
+            + ships * (50_000.0 + 30.0 * self.steel)
+        )
+
 
 @dataclass
 class AllianceInfo:
@@ -905,20 +928,25 @@ class PnWClient:
           • money_stolen + money_looted (winning attacks) → money_looted
             (money_stolen is 0 for VICTORY; money_looted covers VICTORY loot)
           • gasoline/munitions/aluminum/steel_looted (winning attacks) → resource loot
+          • def_soldiers/tanks/aircraft_killed + def_ships_sunk (all attacks) → unit kills
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
-            "num_cities": int,       # nation's current city count
-            "infra_value": float,    # monetary value of infrastructure damage dealt
-            "money_looted": float,   # money looted across all winning attacks
-            "gas_looted": float,     # gasoline looted on member victories (ground + beige)
-            "mun_looted": float,     # munitions looted on member victories (ground + beige)
-            "alum_looted": float,    # aluminum looted on member victories (ground + beige)
-            "steel_looted": float,   # steel looted on member victories (ground + beige)
-            "def_gas_used": float,   # gasoline the enemy spent defending our attacks
-            "def_mun_used": float,   # munitions the enemy spent defending our attacks
-            "def_alum_used": float,  # always 0 (not available per-attack in API)
-            "def_steel_used": float, # always 0 (not available per-attack in API)
+            "num_cities": int,            # nation's current city count
+            "infra_value": float,         # monetary value of infrastructure damage dealt
+            "money_looted": float,        # money looted across all winning attacks
+            "gas_looted": float,          # gasoline looted on member victories (ground + beige)
+            "mun_looted": float,          # munitions looted on member victories (ground + beige)
+            "alum_looted": float,         # aluminum looted on member victories (ground + beige)
+            "steel_looted": float,        # steel looted on member victories (ground + beige)
+            "def_gas_used": float,        # gasoline the enemy spent defending our attacks
+            "def_mun_used": float,        # munitions the enemy spent defending our attacks
+            "def_alum_used": float,       # always 0 (not available per-attack in API)
+            "def_steel_used": float,      # always 0 (not available per-attack in API)
+            "def_soldiers_killed": float, # enemy soldiers destroyed by our member
+            "def_tanks_killed": float,    # enemy tanks destroyed by our member
+            "def_aircraft_killed": float, # enemy aircraft destroyed by our member
+            "def_ships_sunk": float,      # enemy ships sunk by our member
         }.
         """
         results: dict[int, dict[str, Any]] = {}
@@ -938,6 +966,10 @@ class PnWClient:
                 "def_mun_used": 0.0,
                 "def_alum_used": 0.0,
                 "def_steel_used": 0.0,
+                "def_soldiers_killed": 0.0,
+                "def_tanks_killed": 0.0,
+                "def_aircraft_killed": 0.0,
+                "def_ships_sunk": 0.0,
             }
 
         # ------------------------------------------------------------------
@@ -1080,6 +1112,10 @@ class PnWClient:
                             munitions_looted
                             aluminum_looted
                             steel_looted
+                            def_soldiers_killed
+                            def_tanks_killed
+                            def_aircraft_killed
+                            def_ships_sunk
                         }
                         paginatorInfo {
                             hasMorePages
@@ -1119,6 +1155,13 @@ class PnWClient:
                     # war level, not per-attack, so they are not tracked here.
                     results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
                     results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
+
+                    # Enemy units destroyed in this exchange (counted for all outcomes;
+                    # both sides take casualties regardless of who wins the exchange).
+                    results[att_id]["def_soldiers_killed"] += float(attack.get("def_soldiers_killed") or 0)
+                    results[att_id]["def_tanks_killed"]    += float(attack.get("def_tanks_killed") or 0)
+                    results[att_id]["def_aircraft_killed"] += float(attack.get("def_aircraft_killed") or 0)
+                    results[att_id]["def_ships_sunk"]      += float(attack.get("def_ships_sunk") or 0)
 
                     if not won:
                         continue

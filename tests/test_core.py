@@ -1324,6 +1324,10 @@ def _make_attack(
     munitions_looted: float = 0.0,
     aluminum_looted: float = 0.0,
     steel_looted: float = 0.0,
+    def_soldiers_killed: float = 0.0,
+    def_tanks_killed: float = 0.0,
+    def_aircraft_killed: float = 0.0,
+    def_ships_sunk: float = 0.0,
 ) -> dict:
     """Build a per-attack dict matching the Phase-2 warattacks schema."""
     return {
@@ -1339,6 +1343,10 @@ def _make_attack(
         "munitions_looted": munitions_looted,
         "aluminum_looted": aluminum_looted,
         "steel_looted": steel_looted,
+        "def_soldiers_killed": def_soldiers_killed,
+        "def_tanks_killed": def_tanks_killed,
+        "def_aircraft_killed": def_aircraft_killed,
+        "def_ships_sunk": def_ships_sunk,
     }
 
 
@@ -1689,4 +1697,49 @@ class TestGetAllianceDamage:
         # Only the 30 gas from our member's attack is counted; the enemy
         # counterattack gas (20) is excluded because att_id=200 is not in results.
         assert result[100]["def_gas_used"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_unit_kills_accumulated_for_all_attacks(self):
+        """Enemy units killed by our member accumulate into def_*_killed fields
+        and are included regardless of whether our member won the exchange.
+        """
+        war = _make_war("1", "100", "200", "42", "99")
+        # A winning ground attack that kills tanks and aircraft.
+        winning_attack = _make_attack(
+            "100",
+            attack_type="GROUND",
+            victor="100",
+            def_soldiers_killed=50.0,
+            def_tanks_killed=10.0,
+            def_aircraft_killed=0.0,
+            def_ships_sunk=0.0,
+        )
+        # A losing airstrike — aircraft still killed on the ground even on a loss.
+        losing_attack = _make_attack(
+            "100",
+            attack_type="AIRSTRIKE",
+            victor="200",
+            def_soldiers_killed=0.0,
+            def_tanks_killed=0.0,
+            def_aircraft_killed=3.0,
+            def_ships_sunk=0.0,
+        )
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([winning_attack, losing_attack]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        entry = result[100]
+        assert entry["def_soldiers_killed"] == 50.0
+        assert entry["def_tanks_killed"] == 10.0
+        assert entry["def_aircraft_killed"] == 3.0
+        assert entry["def_ships_sunk"] == 0.0
 
