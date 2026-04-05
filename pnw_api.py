@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 # We extract the four war-relevant manufactured resources using case-insensitive
 # patterns that tolerate comma-formatted numbers (e.g. "1,234") with up to two
 # decimal places.
+_LOOT_MONEY_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+money", re.IGNORECASE)
 _LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+gasoline", re.IGNORECASE)
 _LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+munitions", re.IGNORECASE)
 _LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+aluminum", re.IGNORECASE)
@@ -35,8 +36,8 @@ _ATTACK_TYPES_WITH_LOOT: frozenset[str] = frozenset({"GROUND", "VICTORY"})
 _WARATTACKS_BATCH_SIZE = 50
 
 
-def _parse_resource_loot(loot_info: str) -> tuple[float, float, float, float]:
-    """Return ``(gasoline, munitions, aluminum, steel)`` looted from a *loot_info* string."""
+def _parse_resource_loot(loot_info: str) -> tuple[float, float, float, float, float]:
+    """Return ``(money, gasoline, munitions, aluminum, steel)`` looted from a *loot_info* string."""
 
     def _extract(pattern: re.Pattern) -> float:  # type: ignore[type-arg]
         m = pattern.search(loot_info)
@@ -48,6 +49,7 @@ def _parse_resource_loot(loot_info: str) -> tuple[float, float, float, float]:
         return 0.0
 
     return (
+        _extract(_LOOT_MONEY_RE),
         _extract(_LOOT_GAS_RE),
         _extract(_LOOT_MUN_RE),
         _extract(_LOOT_ALU_RE),
@@ -210,6 +212,8 @@ class GameInfo:
     global_radiation: float = 0.0
     # Two-letter continent code (upper) → radiation level
     continent_radiation: dict[str, float] = field(default_factory=dict)
+    # Color name (lower-case) → turn bonus (e.g. {"blue": 2, "red": 1, …})
+    color_bonuses: dict[str, int] = field(default_factory=dict)
 
     def radiation_for(self, continent: str) -> float:
         return self.continent_radiation.get(continent.upper(), 0.0)
@@ -725,7 +729,7 @@ class PnWClient:
         return nation, cities
 
     async def get_game_info(self) -> GameInfo:
-        """Fetch live game metadata: city average, game date, and radiation.
+        """Fetch live game metadata: city average, game date, radiation, and color bonuses.
 
         Falls back to ``GameInfo()`` defaults if the query fails.
         """
@@ -744,6 +748,10 @@ class PnWClient:
                     north_america
                     south_america
                 }
+            }
+            colors {
+                color
+                turn_bonus
             }
         }
         """
@@ -766,6 +774,14 @@ class PnWClient:
             elif isinstance(game_date, dict):
                 month = int(game_date.get("month", 6))
 
+            # Color bloc turn bonuses (skip "gray" which has no bloc bonus)
+            color_bonuses: dict[str, int] = {}
+            for c in (data.get("data", {}).get("colors", []) or []):
+                name = (c.get("color") or "").lower()
+                bonus = int(c.get("turn_bonus") or 0)
+                if name and name != "gray" and bonus > 0:
+                    color_bonuses[name] = bonus
+
             return GameInfo(
                 city_average=city_avg,
                 game_month=month,
@@ -779,6 +795,7 @@ class PnWClient:
                     "NA": float(rad.get("north_america", 0.0) or 0.0),
                     "SA": float(rad.get("south_america", 0.0) or 0.0),
                 },
+                color_bonuses=color_bonuses,
             )
         except Exception:
             log.exception("Failed to fetch game_info")
@@ -1067,12 +1084,8 @@ class PnWClient:
                             type
                             victor
                             money_stolen
-                            money_looted
                             infra_destroyed_value
-                            gasoline_looted
-                            munitions_looted
-                            aluminum_looted
-                            steel_looted
+                            loot_info
                             def_gas_used
                             def_mun_used
                         }
@@ -1118,18 +1131,20 @@ class PnWClient:
                     results[att_id]["infra_value"] += float(
                         attack.get("infra_destroyed_value") or 0
                     )
-                    # money_stolen is 0 for VICTORY/ALLIANCELOOT; money_looted covers those.
-                    money = float(attack.get("money_stolen") or 0) + float(
-                        attack.get("money_looted") or 0
-                    )
+
+                    # Parse loot from loot_info string (covers GROUND and VICTORY).
+                    loot_str = attack.get("loot_info") or ""
+                    if attack_type in _LOOT_TYPES and loot_str:
+                        loot_money, gas, mun, alum, steel = _parse_resource_loot(loot_str)
+                    else:
+                        loot_money, gas, mun, alum, steel = 0.0, 0.0, 0.0, 0.0, 0.0
+
+                    # money_stolen covers per-city ground loot; loot_info covers
+                    # VICTORY beige loot (which may not populate money_stolen).
+                    money = float(attack.get("money_stolen") or 0) or loot_money
                     if money > 0:
                         results[att_id]["money_looted"] += money
 
-                    # Resource loot from dedicated per-attack fields (GROUND and VICTORY).
-                    gas = float(attack.get("gasoline_looted") or 0)
-                    mun = float(attack.get("munitions_looted") or 0)
-                    alum = float(attack.get("aluminum_looted") or 0)
-                    steel = float(attack.get("steel_looted") or 0)
                     if gas or mun or alum or steel:
                         results[att_id]["gas_looted"] += gas
                         results[att_id]["mun_looted"] += mun
@@ -1561,7 +1576,8 @@ def _coal_oil_power_usage(infra: float, plant_count: int) -> float:
 def _nuclear_power_usage(infra: float, plant_count: int) -> float:
     """Uranium consumed per day by nuclear power plants.
 
-    Each plant covers 2000 infra and uses ceil(covered_infra / 1000) * 1.2 per day.
+    Each plant covers up to 2000 infra and uses ceil(covered_infra / 1000) * 3
+    uranium per day, capped at 6 per plant (reached at full 2000 infra).
     """
     if plant_count <= 0:
         return 0.0
@@ -1571,7 +1587,7 @@ def _nuclear_power_usage(infra: float, plant_count: int) -> float:
         covered = min(remaining, 2000.0)
         if covered <= 0:
             break
-        usage += math.ceil(covered / 1000.0) * 1.2
+        usage += min(math.ceil(covered / 1000.0) * 3.0, 6.0)
         remaining -= 2000.0
     return usage
 
@@ -1609,8 +1625,10 @@ def _food_prod_per_city(
             season = 0.8
         elif game_month > 11 or game_month < 3:   # Dec–Feb = southern summer
             season = 1.2
-    else:  # Antarctica
-        season = 0.5
+    else:  # Antarctica — cold year-round; season modifier only applies in summer/winter
+        if 5 < game_month < 9 or game_month > 11 or game_month < 3:
+            season = 0.5
+        # spring/fall (Mar–May, Sep–Nov): season stays 1.0
 
     # Radiation factor (reduces food production)
     rad_factor = max(1.0 - (cont_radiation + global_radiation) / 1000.0, 0.0)
@@ -1636,19 +1654,19 @@ def compute_nation_revenue(
     has_itc = "ITC" in pb
     has_mi  = "MI"  in pb
     has_uep = "UEP" in pb
-    has_iw  = "IW"  in pb   # Iron Works → steel/coal bonus
-    has_bw  = "BW"  in pb   # Bauxite Works → aluminum/bauxite bonus
-    has_egr = "EGR" in pb   # Emergency Gasoline Reserve → ×3 gasoline
-    has_as  = "AS"  in pb   # Arms Stockpile → ×2 munitions
+    has_iw  = "IW"  in pb   # Iron Works → steel bonus
+    has_bw  = "BW"  in pb   # Bauxite Works → aluminum bonus
+    has_egr = "EGR" in pb   # Emergency Gasoline Reserve → ×2 gasoline
+    has_as  = "AS"  in pb   # Arms Stockpile → ×1.2 munitions
 
     continent = _normalize_continent(nation.continent or "NA")
     cont_rad = game_info.radiation_for(continent)
 
-    # Project multipliers for manufactured resources
-    gasoline_mult = 1.0 + (2.0 if has_egr else 0.0)   # ×3 with EGR
-    munitions_mult = 1.0 + (1.0 if has_as  else 0.0)  # ×2 with AS
-    steel_mult     = 1.0 + (0.36 if has_iw else 0.0)  # +36 % with IW
-    aluminum_mult  = 1.0 + (0.36 if has_bw else 0.0)  # +36 % with BW
+    # Project multipliers for manufactured resources (Locutus boostFactor values)
+    gasoline_mult = 2.0 if has_egr else 1.0   # EGR doubles gasoline output
+    munitions_mult = 1.2 if has_as  else 1.0  # AS adds 20 % to munitions
+    steel_mult     = 1.36 if has_iw else 1.0  # IW adds 36 % to steel
+    aluminum_mult  = 1.36 if has_bw else 1.0  # BW adds 36 % to aluminum
 
     rev = NationRevenue()
     total_commerce = 0.0
@@ -1687,6 +1705,17 @@ def compute_nation_revenue(
             rev.steel     += _manu_prod(city.steel_mill,         9.0,  steel_mult)
             rev.aluminum  += _manu_prod(city.aluminum_refinery,  9.0,  aluminum_mult)
 
+            # Raw inputs consumed by manufacturing
+            # Gasoline: 3 oil per refinery (scales with production)
+            rev.oil     -= _manu_prod(city.gasrefinery,       3.0, gasoline_mult)
+            # Munitions: 6 lead per factory (AS boosts output only, not lead usage)
+            rev.lead    -= _manu_prod(city.munitions_factory,  6.0, 1.0)
+            # Steel: 3 iron + 3 coal per mill
+            rev.iron    -= _manu_prod(city.steel_mill,         3.0, steel_mult)
+            rev.coal    -= _manu_prod(city.steel_mill,         3.0, steel_mult)
+            # Aluminum: 3 bauxite per refinery
+            rev.bauxite -= _manu_prod(city.aluminum_refinery,  3.0, aluminum_mult)
+
         # Power plant resource consumption (subtracts from raw resources)
         if city.powered:
             rev.coal    -= _coal_oil_power_usage(city.infrastructure, city.coal_power)
@@ -1695,6 +1724,11 @@ def compute_nation_revenue(
 
     # Food consumption (peacetime)
     rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 750.0
+
+    # Color bloc turn bonus (gray nations get no bonus)
+    color_key = (nation.color or "").lower()
+    color_turn_bonus = game_info.color_bonuses.get(color_key, 0)
+    rev.money += color_turn_bonus * _TURNS_PER_DAY
 
     if cities:
         rev.avg_commerce = total_commerce / len(cities)
