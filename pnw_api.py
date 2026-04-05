@@ -149,6 +149,29 @@ class TradePrice:
             + steel * self.steel
         )
 
+    def unit_kill_value(
+        self,
+        *,
+        soldiers: float = 0.0,
+        tanks: float = 0.0,
+        aircraft: float = 0.0,
+        ships: float = 0.0,
+    ) -> float:
+        """Return the rebuild cost of destroyed enemy units at current market prices.
+
+        Unit rebuild costs (PnW game formulas):
+          Soldier:  $5
+          Tank:     $60  + 0.5 steel
+          Aircraft: $4,000 + 10 aluminum
+          Ship:     $50,000 + 30 steel
+        """
+        return (
+            soldiers * 5.0
+            + tanks * (60.0 + 0.5 * self.steel)
+            + aircraft * (4_000.0 + 10.0 * self.aluminum)
+            + ships * (50_000.0 + 30.0 * self.steel)
+        )
+
 
 @dataclass
 class AllianceInfo:
@@ -905,25 +928,25 @@ class PnWClient:
           • money_stolen + money_looted (winning attacks) → money_looted
             (money_stolen is 0 for VICTORY; money_looted covers VICTORY loot)
           • gasoline/munitions/aluminum/steel_looted (winning attacks) → resource loot
-          • resource loot on VICTORY                  → vict_* copies too
+          • def_soldiers/tanks/aircraft_killed + def_ships_sunk (all attacks) → unit kills
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
-            "num_cities": int,       # nation's current city count
-            "infra_value": float,    # monetary value of infrastructure damage dealt
-            "money_looted": float,   # money looted across all winning attacks
-            "gas_looted": float,     # gasoline looted on member victories
-            "mun_looted": float,     # munitions looted on member victories
-            "alum_looted": float,    # aluminum looted on member victories
-            "steel_looted": float,   # steel looted on member victories
-            "vict_gas_looted": float,   # gasoline looted specifically on beige
-            "vict_mun_looted": float,   # munitions looted specifically on beige
-            "vict_alum_looted": float,  # aluminum looted specifically on beige
-            "vict_steel_looted": float, # steel looted specifically on beige
-            "def_gas_used": float,   # gasoline the enemy spent defending our attacks
-            "def_mun_used": float,   # munitions the enemy spent defending our attacks
-            "def_alum_used": float,  # always 0 (not available per-attack in API)
-            "def_steel_used": float, # always 0 (not available per-attack in API)
+            "num_cities": int,            # nation's current city count
+            "infra_value": float,         # monetary value of infrastructure damage dealt
+            "money_looted": float,        # money looted across all winning attacks
+            "gas_looted": float,          # gasoline looted on member victories (ground + beige)
+            "mun_looted": float,          # munitions looted on member victories (ground + beige)
+            "alum_looted": float,         # aluminum looted on member victories (ground + beige)
+            "steel_looted": float,        # steel looted on member victories (ground + beige)
+            "def_gas_used": float,        # gasoline the enemy spent defending our attacks
+            "def_mun_used": float,        # munitions the enemy spent defending our attacks
+            "def_alum_used": float,       # always 0 (not available per-attack in API)
+            "def_steel_used": float,      # always 0 (not available per-attack in API)
+            "def_soldiers_killed": float, # enemy soldiers destroyed by our member
+            "def_tanks_killed": float,    # enemy tanks destroyed by our member
+            "def_aircraft_killed": float, # enemy aircraft destroyed by our member
+            "def_ships_sunk": float,      # enemy ships sunk by our member
         }.
         """
         results: dict[int, dict[str, Any]] = {}
@@ -939,18 +962,14 @@ class PnWClient:
                 "mun_looted": 0.0,
                 "alum_looted": 0.0,
                 "steel_looted": 0.0,
-                # Resources looted specifically on a VICTORY (beige) attack.
-                # These are also added to gas/mun/alum/steel_looted above so
-                # they appear in the loot column; the vict_* copies are used
-                # separately to include them in the resource-damage column.
-                "vict_gas_looted": 0.0,
-                "vict_mun_looted": 0.0,
-                "vict_alum_looted": 0.0,
-                "vict_steel_looted": 0.0,
                 "def_gas_used": 0.0,
                 "def_mun_used": 0.0,
                 "def_alum_used": 0.0,
                 "def_steel_used": 0.0,
+                "def_soldiers_killed": 0.0,
+                "def_tanks_killed": 0.0,
+                "def_aircraft_killed": 0.0,
+                "def_ships_sunk": 0.0,
             }
 
         # ------------------------------------------------------------------
@@ -1084,10 +1103,18 @@ class PnWClient:
                             type
                             victor
                             money_stolen
+                            money_looted
                             infra_destroyed_value
                             loot_info
                             def_gas_used
                             def_mun_used
+                            gasoline_looted
+                            munitions_looted
+                            aluminum_looted
+                            steel_looted
+                            defcas1
+                            defcas2
+                            aircraft_killed_by_tanks
                         }
                         paginatorInfo {
                             hasMorePages
@@ -1128,6 +1155,32 @@ class PnWClient:
                     results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
                     results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
 
+                    # Enemy units destroyed in this exchange, derived from the
+                    # generic defcas1/defcas2 fields (pnwkit model).
+                    # defcas1 = main defender casualties:
+                    #   GROUND   → soldiers; airstrike → planes; NAVAL → ships
+                    # defcas2 = secondary defender casualties:
+                    #   GROUND   → tanks; airstrike → units targeted (soldiers/tanks/ships)
+                    # aircraft_killed_by_tanks: planes destroyed on the ground when
+                    #   attacker achieves ground control during a GROUND attack.
+                    defcas1 = float(attack.get("defcas1") or 0)
+                    defcas2 = float(attack.get("defcas2") or 0)
+                    ac_by_tanks = float(attack.get("aircraft_killed_by_tanks") or 0)
+                    if attack_type == "GROUND":
+                        results[att_id]["def_soldiers_killed"] += defcas1
+                        results[att_id]["def_tanks_killed"]    += defcas2
+                        results[att_id]["def_aircraft_killed"] += ac_by_tanks
+                    elif attack_type == "NAVAL":
+                        results[att_id]["def_ships_sunk"]      += defcas1
+                    elif attack_type == "AIRVAIR":
+                        results[att_id]["def_aircraft_killed"] += defcas1
+                    elif attack_type == "AIRVSOLDIERS":
+                        results[att_id]["def_soldiers_killed"] += defcas2
+                    elif attack_type == "AIRVTANKS":
+                        results[att_id]["def_tanks_killed"]    += defcas2
+                    elif attack_type == "AIRVSHIPS":
+                        results[att_id]["def_ships_sunk"]      += defcas2
+
                     if not won:
                         continue
 
@@ -1136,16 +1189,32 @@ class PnWClient:
                         attack.get("infra_destroyed_value") or 0
                     )
 
-                    # Parse loot from loot_info string (covers GROUND and VICTORY).
-                    loot_str = attack.get("loot_info") or ""
-                    if attack_type in _LOOT_TYPES and loot_str:
-                        loot_money, gas, mun, alum, steel = _parse_resource_loot(loot_str)
+                    # Resource loot: prefer structured numeric fields from the API;
+                    # fall back to parsing the loot_info text string when they are
+                    # absent (e.g. older API versions or test stubs).
+                    if attack_type in _LOOT_TYPES:
+                        gas = float(attack.get("gasoline_looted") or 0)
+                        mun = float(attack.get("munitions_looted") or 0)
+                        alum = float(attack.get("aluminum_looted") or 0)
+                        steel = float(attack.get("steel_looted") or 0)
+                        if not (gas or mun or alum or steel):
+                            loot_str = attack.get("loot_info") or ""
+                            if loot_str:
+                                _, gas, mun, alum, steel = _parse_resource_loot(loot_str)
                     else:
-                        loot_money, gas, mun, alum, steel = 0.0, 0.0, 0.0, 0.0, 0.0
+                        gas = mun = alum = steel = 0.0
 
-                    # money_stolen covers per-city ground loot; loot_info covers
-                    # VICTORY beige loot (which may not populate money_stolen).
-                    money = float(attack.get("money_stolen") or 0) or loot_money
+                    # money_stolen covers per-city ground loot; money_looted covers
+                    # VICTORY loot (which may not populate money_stolen).
+                    # Fall back to loot_info text parsing when neither field is set.
+                    money = float(
+                        attack.get("money_stolen") or attack.get("money_looted") or 0
+                    )
+                    if not money:
+                        loot_str = attack.get("loot_info") or ""
+                        if loot_str:
+                            loot_money, *_ = _parse_resource_loot(loot_str)
+                            money = loot_money
                     if money > 0:
                         results[att_id]["money_looted"] += money
 
@@ -1154,16 +1223,6 @@ class PnWClient:
                         results[att_id]["mun_looted"] += mun
                         results[att_id]["alum_looted"] += alum
                         results[att_id]["steel_looted"] += steel
-
-                        # VICTORY loot also counts as resource damage dealt:
-                        # the enemy's stockpile is permanently reduced by the
-                        # looted amount, so track it separately for the
-                        # res-damage column as well as the loot column.
-                        if attack_type == _VICTORY:
-                            results[att_id]["vict_gas_looted"] += gas
-                            results[att_id]["vict_mun_looted"] += mun
-                            results[att_id]["vict_alum_looted"] += alum
-                            results[att_id]["vict_steel_looted"] += steel
 
                 if not atk_has_more:
                     break

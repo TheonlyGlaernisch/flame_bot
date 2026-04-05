@@ -1192,7 +1192,7 @@ class TestParseResourceLoot:
         loot_info = (
             "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel from the nation."
         )
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 3.0
         assert mun == 2.0
         assert alum == 1.0
@@ -1200,7 +1200,7 @@ class TestParseResourceLoot:
 
     def test_comma_formatted_numbers(self):
         loot_info = "looted 1,234 Gasoline, 5,678 Munitions, 900 Aluminum, 100 Steel."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 1234.0
         assert mun == 5678.0
         assert alum == 900.0
@@ -1208,29 +1208,29 @@ class TestParseResourceLoot:
 
     def test_partial_resources_missing_values_default_to_zero(self):
         loot_info = "The attacking forces looted 5 Steel from the nation."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 0.0
         assert mun == 0.0
         assert alum == 0.0
         assert steel == 5.0
 
     def test_case_insensitive(self):
-        gas, _, _, _ = _parse_resource_loot("looted 10 GASOLINE")
+        _, gas, _, _, _ = _parse_resource_loot("looted 10 GASOLINE")
         assert gas == 10.0
-        _, mun, _, _ = _parse_resource_loot("looted 7 munitions")
+        _, _, mun, _, _ = _parse_resource_loot("looted 7 munitions")
         assert mun == 7.0
 
     def test_empty_string_returns_all_zeros(self):
-        gas, mun, alum, steel = _parse_resource_loot("")
+        _, gas, mun, alum, steel = _parse_resource_loot("")
         assert gas == mun == alum == steel == 0.0
 
     def test_no_match_returns_zeros(self):
-        gas, mun, alum, steel = _parse_resource_loot("The forces attacked but looted nothing.")
+        _, gas, mun, alum, steel = _parse_resource_loot("The forces attacked but looted nothing.")
         assert gas == mun == alum == steel == 0.0
 
     def test_decimal_quantities(self):
         loot_info = "looted 3.5 Gasoline, 2.25 Munitions."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 3.5
         assert mun == 2.25
         assert alum == 0.0
@@ -1238,7 +1238,7 @@ class TestParseResourceLoot:
 
     def test_zero_quantity(self):
         loot_info = "looted 0 Gasoline, 0 Munitions, 0 Aluminum, 0 Steel."
-        gas, mun, alum, steel = _parse_resource_loot(loot_info)
+        _, gas, mun, alum, steel = _parse_resource_loot(loot_info)
         assert gas == 0.0
         assert mun == 0.0
         assert alum == 0.0
@@ -1324,6 +1324,9 @@ def _make_attack(
     munitions_looted: float = 0.0,
     aluminum_looted: float = 0.0,
     steel_looted: float = 0.0,
+    defcas1: float = 0.0,
+    defcas2: float = 0.0,
+    aircraft_killed_by_tanks: float = 0.0,
 ) -> dict:
     """Build a per-attack dict matching the Phase-2 warattacks schema."""
     return {
@@ -1339,6 +1342,9 @@ def _make_attack(
         "munitions_looted": munitions_looted,
         "aluminum_looted": aluminum_looted,
         "steel_looted": steel_looted,
+        "defcas1": defcas1,
+        "defcas2": defcas2,
+        "aircraft_killed_by_tanks": aircraft_killed_by_tanks,
     }
 
 
@@ -1453,14 +1459,9 @@ class TestGetAllianceDamage:
         assert entry["mun_looted"] == 3.0
         assert entry["alum_looted"] == 2.0
         assert entry["steel_looted"] == 1.0
-        # GROUND loot does not go into vict_* fields
-        assert entry["vict_gas_looted"] == 0.0
-        assert entry["vict_mun_looted"] == 0.0
-        assert entry["vict_alum_looted"] == 0.0
-        assert entry["vict_steel_looted"] == 0.0
 
     @pytest.mark.asyncio
-    async def test_victory_attack_adds_money_and_resources_to_both_columns(self):
+    async def test_victory_attack_adds_money_and_resources_to_loot(self):
         war = _make_war("1", "100", "200", "42", "99")
         victory_attack = {
             "att_id": "100",
@@ -1490,17 +1491,13 @@ class TestGetAllianceDamage:
             result = await client.get_alliance_damage(42, _CUTOFF)
 
         entry = result[100]
-        # VICTORY money_stolen is added to money_looted
+        # VICTORY money_looted is counted
         assert entry["money_looted"] == 1_000_000.0
-        # VICTORY resources appear in both gas_looted and vict_gas_looted
+        # VICTORY resources appear in the looted fields (which also feed res_dmg)
         assert entry["gas_looted"] == 10.0
         assert entry["mun_looted"] == 5.0
         assert entry["alum_looted"] == 3.0
         assert entry["steel_looted"] == 2.0
-        assert entry["vict_gas_looted"] == 10.0
-        assert entry["vict_mun_looted"] == 5.0
-        assert entry["vict_alum_looted"] == 3.0
-        assert entry["vict_steel_looted"] == 2.0
 
     @pytest.mark.asyncio
     async def test_failed_exchange_yields_no_loot(self):
@@ -1698,4 +1695,56 @@ class TestGetAllianceDamage:
         # Only the 30 gas from our member's attack is counted; the enemy
         # counterattack gas (20) is excluded because att_id=200 is not in results.
         assert result[100]["def_gas_used"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_unit_kills_accumulated_for_all_attacks(self):
+        """Enemy units killed by our member accumulate into def_*_killed fields
+        using defcas1/defcas2 interpreted by attack type.
+
+        - GROUND: defcas1=soldiers, defcas2=tanks, aircraft_killed_by_tanks=aircraft
+        - AIRVAIR: defcas1=aircraft
+        - NAVAL: defcas1=ships
+        """
+        war = _make_war("1", "100", "200", "42", "99")
+        # A winning ground attack: kills 50 soldiers, 10 tanks, 2 aircraft by tanks.
+        ground_attack = _make_attack(
+            "100",
+            attack_type="GROUND",
+            victor="100",
+            defcas1=50.0,
+            defcas2=10.0,
+            aircraft_killed_by_tanks=2.0,
+        )
+        # A losing airstrike (AIRVAIR) — planes still killed even on a loss.
+        air_attack = _make_attack(
+            "100",
+            attack_type="AIRVAIR",
+            victor="200",
+            defcas1=3.0,
+        )
+        # A naval attack that sinks 1 ship.
+        naval_attack = _make_attack(
+            "100",
+            attack_type="NAVAL",
+            victor="100",
+            defcas1=1.0,
+        )
+        client = PnWClient(api_key="dummy")
+        with patch.object(
+            client,
+            "_query",
+            new=AsyncMock(
+                side_effect=[
+                    _wars_response([war]),
+                    _warattacks_response([ground_attack, air_attack, naval_attack]),
+                ]
+            ),
+        ):
+            result = await client.get_alliance_damage(42, _CUTOFF)
+
+        entry = result[100]
+        assert entry["def_soldiers_killed"] == 50.0
+        assert entry["def_tanks_killed"] == 10.0
+        assert entry["def_aircraft_killed"] == 5.0  # 2 by tanks + 3 in AIRVAIR
+        assert entry["def_ships_sunk"] == 1.0
 
