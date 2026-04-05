@@ -19,13 +19,13 @@ log = logging.getLogger(__name__)
 # PnW loot_info is a human-readable string like:
 #   "The attacking forces looted 3 Gasoline, 2 Munitions, 1 Aluminum, 1 Steel…"
 # We extract the four war-relevant manufactured resources using case-insensitive
-# patterns that tolerate comma-formatted numbers (e.g. "1,234") with up to two
-# decimal places.
-_LOOT_MONEY_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+money", re.IGNORECASE)
-_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+gasoline", re.IGNORECASE)
-_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+munitions", re.IGNORECASE)
-_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+aluminum", re.IGNORECASE)
-_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d{1,2})?)\s+steel", re.IGNORECASE)
+# patterns that tolerate comma-formatted numbers (e.g. "1,234") with any number
+# of decimal places (PnW may use 2 or 3 decimal places depending on context).
+_LOOT_MONEY_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+money", re.IGNORECASE)
+_LOOT_GAS_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+gasoline", re.IGNORECASE)
+_LOOT_MUN_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+munitions", re.IGNORECASE)
+_LOOT_ALU_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+aluminum", re.IGNORECASE)
+_LOOT_STL_RE = re.compile(r"([\d,]+(?:\.\d+)?)\s+steel", re.IGNORECASE)
 
 # Attack types that yield resource loot when the attacker wins.
 # GROUND: per-city loot on a successful ground battle.
@@ -1114,8 +1114,12 @@ class PnWClient:
                         continue
 
                     attack_type = str(attack.get("type") or "")
+                    # VICTORY only occurs when the war attacker's resistance
+                    # reaches 0, meaning the attacker always wins.  The API
+                    # sometimes returns victor=0 for this synthetic event, so
+                    # don't rely on the victor field for VICTORY type.
                     victor = int(attack.get("victor") or 0)
-                    won = bool(victor and victor == att_id)
+                    won = attack_type == _VICTORY or bool(victor and victor == att_id)
 
                     # Enemy resource consumption defending against this attack
                     # (counted regardless of outcome — defender uses resources either way).
@@ -1722,8 +1726,9 @@ def compute_nation_revenue(
             rev.oil     -= _coal_oil_power_usage(city.infrastructure, city.oil_power)
             rev.uranium -= _nuclear_power_usage(city.infrastructure, city.nuclear_power)
 
-    # Food consumption (peacetime)
-    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 750.0
+    # Food consumption (peacetime, per day = per-turn rate × 12 turns/day).
+    # Per-turn rate: 1 food per 1 000 population + 1 food per 750 soldiers.
+    rev.food_consumption = (nation.population / 1000.0 + nation.soldiers / 750.0) * _TURNS_PER_DAY
 
     # Color bloc turn bonus (gray nations get no bonus)
     color_key = (nation.color or "").lower()
