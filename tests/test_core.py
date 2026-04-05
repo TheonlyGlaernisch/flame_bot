@@ -1324,10 +1324,9 @@ def _make_attack(
     munitions_looted: float = 0.0,
     aluminum_looted: float = 0.0,
     steel_looted: float = 0.0,
-    def_soldiers_killed: float = 0.0,
-    def_tanks_killed: float = 0.0,
-    def_aircraft_killed: float = 0.0,
-    def_ships_sunk: float = 0.0,
+    defcas1: float = 0.0,
+    defcas2: float = 0.0,
+    aircraft_killed_by_tanks: float = 0.0,
 ) -> dict:
     """Build a per-attack dict matching the Phase-2 warattacks schema."""
     return {
@@ -1343,10 +1342,9 @@ def _make_attack(
         "munitions_looted": munitions_looted,
         "aluminum_looted": aluminum_looted,
         "steel_looted": steel_looted,
-        "def_soldiers_killed": def_soldiers_killed,
-        "def_tanks_killed": def_tanks_killed,
-        "def_aircraft_killed": def_aircraft_killed,
-        "def_ships_sunk": def_ships_sunk,
+        "defcas1": defcas1,
+        "defcas2": defcas2,
+        "aircraft_killed_by_tanks": aircraft_killed_by_tanks,
     }
 
 
@@ -1701,28 +1699,35 @@ class TestGetAllianceDamage:
     @pytest.mark.asyncio
     async def test_unit_kills_accumulated_for_all_attacks(self):
         """Enemy units killed by our member accumulate into def_*_killed fields
-        and are included regardless of whether our member won the exchange.
+        using defcas1/defcas2 interpreted by attack type.
+
+        - GROUND: defcas1=soldiers, defcas2=tanks, aircraft_killed_by_tanks=aircraft
+        - AIRVAIR: defcas1=aircraft
+        - NAVAL: defcas1=ships
         """
         war = _make_war("1", "100", "200", "42", "99")
-        # A winning ground attack that kills tanks and aircraft.
-        winning_attack = _make_attack(
+        # A winning ground attack: kills 50 soldiers, 10 tanks, 2 aircraft by tanks.
+        ground_attack = _make_attack(
             "100",
             attack_type="GROUND",
             victor="100",
-            def_soldiers_killed=50.0,
-            def_tanks_killed=10.0,
-            def_aircraft_killed=0.0,
-            def_ships_sunk=0.0,
+            defcas1=50.0,
+            defcas2=10.0,
+            aircraft_killed_by_tanks=2.0,
         )
-        # A losing airstrike — aircraft still killed on the ground even on a loss.
-        losing_attack = _make_attack(
+        # A losing airstrike (AIRVAIR) — planes still killed even on a loss.
+        air_attack = _make_attack(
             "100",
-            attack_type="AIRSTRIKE",
+            attack_type="AIRVAIR",
             victor="200",
-            def_soldiers_killed=0.0,
-            def_tanks_killed=0.0,
-            def_aircraft_killed=3.0,
-            def_ships_sunk=0.0,
+            defcas1=3.0,
+        )
+        # A naval attack that sinks 1 ship.
+        naval_attack = _make_attack(
+            "100",
+            attack_type="NAVAL",
+            victor="100",
+            defcas1=1.0,
         )
         client = PnWClient(api_key="dummy")
         with patch.object(
@@ -1731,7 +1736,7 @@ class TestGetAllianceDamage:
             new=AsyncMock(
                 side_effect=[
                     _wars_response([war]),
-                    _warattacks_response([winning_attack, losing_attack]),
+                    _warattacks_response([ground_attack, air_attack, naval_attack]),
                 ]
             ),
         ):
@@ -1740,6 +1745,6 @@ class TestGetAllianceDamage:
         entry = result[100]
         assert entry["def_soldiers_killed"] == 50.0
         assert entry["def_tanks_killed"] == 10.0
-        assert entry["def_aircraft_killed"] == 3.0
-        assert entry["def_ships_sunk"] == 0.0
+        assert entry["def_aircraft_killed"] == 5.0  # 2 by tanks + 3 in AIRVAIR
+        assert entry["def_ships_sunk"] == 1.0
 

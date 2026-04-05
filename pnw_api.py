@@ -1112,10 +1112,9 @@ class PnWClient:
                             munitions_looted
                             aluminum_looted
                             steel_looted
-                            def_soldiers_killed
-                            def_tanks_killed
-                            def_aircraft_killed
-                            def_ships_sunk
+                            defcas1
+                            defcas2
+                            aircraft_killed_by_tanks
                         }
                         paginatorInfo {
                             hasMorePages
@@ -1156,12 +1155,31 @@ class PnWClient:
                     results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
                     results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
 
-                    # Enemy units destroyed in this exchange (counted for all outcomes;
-                    # both sides take casualties regardless of who wins the exchange).
-                    results[att_id]["def_soldiers_killed"] += float(attack.get("def_soldiers_killed") or 0)
-                    results[att_id]["def_tanks_killed"]    += float(attack.get("def_tanks_killed") or 0)
-                    results[att_id]["def_aircraft_killed"] += float(attack.get("def_aircraft_killed") or 0)
-                    results[att_id]["def_ships_sunk"]      += float(attack.get("def_ships_sunk") or 0)
+                    # Enemy units destroyed in this exchange, derived from the
+                    # generic defcas1/defcas2 fields (pnwkit model).
+                    # defcas1 = main defender casualties:
+                    #   GROUND   → soldiers; airstrike → planes; NAVAL → ships
+                    # defcas2 = secondary defender casualties:
+                    #   GROUND   → tanks; airstrike → units targeted (soldiers/tanks/ships)
+                    # aircraft_killed_by_tanks: planes destroyed on the ground when
+                    #   attacker achieves ground control during a GROUND attack.
+                    defcas1 = float(attack.get("defcas1") or 0)
+                    defcas2 = float(attack.get("defcas2") or 0)
+                    ac_by_tanks = float(attack.get("aircraft_killed_by_tanks") or 0)
+                    if attack_type == "GROUND":
+                        results[att_id]["def_soldiers_killed"] += defcas1
+                        results[att_id]["def_tanks_killed"]    += defcas2
+                        results[att_id]["def_aircraft_killed"] += ac_by_tanks
+                    elif attack_type == "NAVAL":
+                        results[att_id]["def_ships_sunk"]      += defcas1
+                    elif attack_type == "AIRVAIR":
+                        results[att_id]["def_aircraft_killed"] += defcas1
+                    elif attack_type == "AIRVSOLDIERS":
+                        results[att_id]["def_soldiers_killed"] += defcas2
+                    elif attack_type == "AIRVTANKS":
+                        results[att_id]["def_tanks_killed"]    += defcas2
+                    elif attack_type == "AIRVSHIPS":
+                        results[att_id]["def_ships_sunk"]      += defcas2
 
                     if not won:
                         continue
