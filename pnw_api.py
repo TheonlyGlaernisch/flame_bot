@@ -1773,9 +1773,12 @@ def compute_nation_revenue(
     if has_ala:
         rev.food_production *= 1.2
 
-    # Food consumption (peacetime).
-    # Rate: 1 food per 1 000 population + 1 food per 750 soldiers (per turn).
-    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / 750.0
+    # Food consumption.
+    # Rate: 1 food per 1 000 population per turn.
+    # Soldiers: 1 per 500 during wartime (any active war), 1 per 750 during peacetime.
+    at_war = (nation.offensive_wars + nation.defensive_wars) > 0
+    soldier_divisor = 500.0 if at_war else 750.0
+    rev.food_consumption = nation.population / 1000.0 + nation.soldiers / soldier_divisor
 
     # Color bloc turn bonus (gray nations get no bonus)
     color_key = (nation.color or "").lower()
