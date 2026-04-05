@@ -2205,10 +2205,10 @@ def _build_leaderboard_page(
         cities = s["num_cities"]
         infra = s["infra_value"]
         res_dmg = prices.resource_value(
-            gasoline=s["def_gas_used"] + s["vict_gas_looted"],
-            munitions=s["def_mun_used"] + s["vict_mun_looted"],
-            aluminum=s["def_alum_used"] + s["vict_alum_looted"],
-            steel=s["def_steel_used"] + s["vict_steel_looted"],
+            gasoline=s["def_gas_used"] + s["gas_looted"],
+            munitions=s["def_mun_used"] + s["mun_looted"],
+            aluminum=s["def_alum_used"] + s["alum_looted"],
+            steel=s["def_steel_used"] + s["steel_looted"],
         )
         loot = s["money_looted"] + prices.resource_value(
             gasoline=s["gas_looted"],
@@ -2280,10 +2280,10 @@ class LeaderboardView(discord.ui.View):
 
     def _res_dmg(self, s: dict) -> float:
         return self._prices.resource_value(
-            gasoline=s["def_gas_used"] + s["vict_gas_looted"],
-            munitions=s["def_mun_used"] + s["vict_mun_looted"],
-            aluminum=s["def_alum_used"] + s["vict_alum_looted"],
-            steel=s["def_steel_used"] + s["vict_steel_looted"],
+            gasoline=s["def_gas_used"] + s["gas_looted"],
+            munitions=s["def_mun_used"] + s["mun_looted"],
+            aluminum=s["def_alum_used"] + s["alum_looted"],
+            steel=s["def_steel_used"] + s["steel_looted"],
         )
 
     def _sort_key(self, item: tuple[int, dict]) -> float:
@@ -2453,10 +2453,6 @@ async def damage_command(
                 "mun_looted": 0.0,
                 "alum_looted": 0.0,
                 "steel_looted": 0.0,
-                "vict_gas_looted": 0.0,
-                "vict_mun_looted": 0.0,
-                "vict_alum_looted": 0.0,
-                "vict_steel_looted": 0.0,
                 "def_gas_used": 0.0,
                 "def_mun_used": 0.0,
                 "def_alum_used": 0.0,

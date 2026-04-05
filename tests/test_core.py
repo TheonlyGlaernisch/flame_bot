@@ -1453,14 +1453,9 @@ class TestGetAllianceDamage:
         assert entry["mun_looted"] == 3.0
         assert entry["alum_looted"] == 2.0
         assert entry["steel_looted"] == 1.0
-        # GROUND loot does not go into vict_* fields
-        assert entry["vict_gas_looted"] == 0.0
-        assert entry["vict_mun_looted"] == 0.0
-        assert entry["vict_alum_looted"] == 0.0
-        assert entry["vict_steel_looted"] == 0.0
 
     @pytest.mark.asyncio
-    async def test_victory_attack_adds_money_and_resources_to_both_columns(self):
+    async def test_victory_attack_adds_money_and_resources_to_loot(self):
         war = _make_war("1", "100", "200", "42", "99")
         victory_attack = {
             "att_id": "100",
@@ -1490,17 +1485,13 @@ class TestGetAllianceDamage:
             result = await client.get_alliance_damage(42, _CUTOFF)
 
         entry = result[100]
-        # VICTORY money_stolen is added to money_looted
+        # VICTORY money_looted is counted
         assert entry["money_looted"] == 1_000_000.0
-        # VICTORY resources appear in both gas_looted and vict_gas_looted
+        # VICTORY resources appear in the looted fields (which also feed res_dmg)
         assert entry["gas_looted"] == 10.0
         assert entry["mun_looted"] == 5.0
         assert entry["alum_looted"] == 3.0
         assert entry["steel_looted"] == 2.0
-        assert entry["vict_gas_looted"] == 10.0
-        assert entry["vict_mun_looted"] == 5.0
-        assert entry["vict_alum_looted"] == 3.0
-        assert entry["vict_steel_looted"] == 2.0
 
     @pytest.mark.asyncio
     async def test_failed_exchange_yields_no_loot(self):

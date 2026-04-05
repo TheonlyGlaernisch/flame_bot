@@ -905,21 +905,16 @@ class PnWClient:
           • money_stolen + money_looted (winning attacks) → money_looted
             (money_stolen is 0 for VICTORY; money_looted covers VICTORY loot)
           • gasoline/munitions/aluminum/steel_looted (winning attacks) → resource loot
-          • resource loot on VICTORY                  → vict_* copies too
 
         Returns a dict mapping nation_id -> {
             "nation_name": str,
             "num_cities": int,       # nation's current city count
             "infra_value": float,    # monetary value of infrastructure damage dealt
             "money_looted": float,   # money looted across all winning attacks
-            "gas_looted": float,     # gasoline looted on member victories
-            "mun_looted": float,     # munitions looted on member victories
-            "alum_looted": float,    # aluminum looted on member victories
-            "steel_looted": float,   # steel looted on member victories
-            "vict_gas_looted": float,   # gasoline looted specifically on beige
-            "vict_mun_looted": float,   # munitions looted specifically on beige
-            "vict_alum_looted": float,  # aluminum looted specifically on beige
-            "vict_steel_looted": float, # steel looted specifically on beige
+            "gas_looted": float,     # gasoline looted on member victories (ground + beige)
+            "mun_looted": float,     # munitions looted on member victories (ground + beige)
+            "alum_looted": float,    # aluminum looted on member victories (ground + beige)
+            "steel_looted": float,   # steel looted on member victories (ground + beige)
             "def_gas_used": float,   # gasoline the enemy spent defending our attacks
             "def_mun_used": float,   # munitions the enemy spent defending our attacks
             "def_alum_used": float,  # always 0 (not available per-attack in API)
@@ -939,14 +934,6 @@ class PnWClient:
                 "mun_looted": 0.0,
                 "alum_looted": 0.0,
                 "steel_looted": 0.0,
-                # Resources looted specifically on a VICTORY (beige) attack.
-                # These are also added to gas/mun/alum/steel_looted above so
-                # they appear in the loot column; the vict_* copies are used
-                # separately to include them in the resource-damage column.
-                "vict_gas_looted": 0.0,
-                "vict_mun_looted": 0.0,
-                "vict_alum_looted": 0.0,
-                "vict_steel_looted": 0.0,
                 "def_gas_used": 0.0,
                 "def_mun_used": 0.0,
                 "def_alum_used": 0.0,
@@ -1175,16 +1162,6 @@ class PnWClient:
                         results[att_id]["mun_looted"] += mun
                         results[att_id]["alum_looted"] += alum
                         results[att_id]["steel_looted"] += steel
-
-                        # VICTORY loot also counts as resource damage dealt:
-                        # the enemy's stockpile is permanently reduced by the
-                        # looted amount, so track it separately for the
-                        # res-damage column as well as the loot column.
-                        if attack_type == _VICTORY:
-                            results[att_id]["vict_gas_looted"] += gas
-                            results[att_id]["vict_mun_looted"] += mun
-                            results[att_id]["vict_alum_looted"] += alum
-                            results[att_id]["vict_steel_looted"] += steel
 
                 if not atk_has_more:
                     break
