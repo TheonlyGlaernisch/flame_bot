@@ -104,7 +104,7 @@ Commands
     The new key is persisted in the database and reloaded on restart.
 
 /suggestion <content>
-    Send a suggestion to the dev via Discord DMs.
+    Send a suggestion to the dev.
 
 """
 from __future__ import annotations
@@ -777,24 +777,46 @@ async def _handle_alliance_find(
     """Shared logic for /alliance info and /test alliance info."""
     query = query.strip()
     mention_match = _MENTION_RE.match(query)
+
+    async def _get_mentioned_nation_via_api(discord_id: int) -> Nation | None:
+        """Resolve a mentioned member to a nation using the PnW API only."""
+        member = interaction.guild and interaction.guild.get_member(discord_id)
+        if member is None and interaction.guild is not None:
+            try:
+                member = await interaction.guild.fetch_member(discord_id)
+            except discord.HTTPException:
+                member = None
+        if member is None:
+            return None
+
+        candidate_tags = [
+            member.name,
+            member.display_name,
+            member.global_name or "",
+        ]
+        if member.discriminator and member.discriminator != "0":
+            candidate_tags.append(f"{member.name}#{member.discriminator}")
+
+        for tag in candidate_tags:
+            candidate = tag.strip()
+            if not candidate:
+                continue
+            nation = await pnw.get_nation_by_discord_tag(candidate)
+            if nation is not None and pnw.discord_matches(nation.discord_tag, candidate):
+                return nation
+        return None
+
     try:
         if mention_match:
             discord_id = int(mention_match.group(1))
-            row = bot.db.get_by_discord_id(discord_id)
-            if row is None:
-                await interaction.followup.send(
-                    embed=_info_embed(f"ℹ️ <@{discord_id}> has no registered nation.")
-                )
-                return
-            nation_info = await pnw.get_nation_with_cities(int(row["nation_id"]))
-            if nation_info is None:
+            nation = await _get_mentioned_nation_via_api(discord_id)
+            if nation is None:
                 await interaction.followup.send(
                     embed=_info_embed(
-                        f"ℹ️ Could not find nation ID `{row['nation_id']}` for <@{discord_id}>."
+                        f"ℹ️ Could not resolve <@{discord_id}> via the PnW Discord field."
                     )
                 )
                 return
-            nation, _cities = nation_info
             if nation.alliance_id <= 0:
                 await interaction.followup.send(
                     embed=_info_embed(
@@ -963,7 +985,7 @@ bot.tree.add_command(alliance_group)
     name="info",
     description="Look up a Politics and War alliance by ID, name, or @mention.",
 )
-@app_commands.describe(query="Alliance ID, alliance name, or a @mention of a registered member.")
+@app_commands.describe(query="Alliance ID, alliance name, or a @mention.")
 async def alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_find(interaction, bot.pnw, query)
@@ -1541,7 +1563,7 @@ _LOCUTUS_RES_KEYS = (
     "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum",
 )
 
-_SUGGESTION_DM_USERNAMES = ("glaernsich", "glaernischtheonly")
+_SUGGESTION_DM_USERNAMES = ("glaernisch", "glaernischtheonly")
 
 
 async def _send_suggestion_dms(
@@ -1684,7 +1706,7 @@ async def send_resources(
 
 @bot.tree.command(
     name="suggestion",
-    description="Send a suggestion to leadership via Discord DMs.",
+    description="Send a suggestion to the dev.",
 )
 @app_commands.describe(content="Your suggestion text.")
 async def suggestion(interaction: discord.Interaction, content: str) -> None:
@@ -1773,7 +1795,7 @@ test_group.add_command(test_alliance_group)
     name="info",
     description="Look up a PnW alliance via the TEST API by ID, name, or @mention.",
 )
-@app_commands.describe(query="Alliance ID, alliance name, or a @mention of a registered member.")
+@app_commands.describe(query="Alliance ID, alliance name, or a @mention.")
 async def test_alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_find(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
