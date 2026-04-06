@@ -21,7 +21,7 @@ Commands
     military capacity percentages.
 
 /alliance info <query>
-    Look up a Politics and War alliance by ID or name.
+    Look up a Politics and War alliance by ID, name, or @mention.
     Returns an embed with score, member count, avg cities, and more.
 
 /alliance members <query>
@@ -102,6 +102,9 @@ Commands
 /admin api_key set <api_key>
     (Admin only) Override the PnW API key used by the bot at runtime.
     The new key is persisted in the database and reloaded on restart.
+
+/suggestion <content>
+    Send a suggestion to leadership via Discord DMs.
 
 """
 from __future__ import annotations
@@ -773,8 +776,34 @@ async def _handle_alliance_find(
 ) -> None:
     """Shared logic for /alliance info and /test alliance info."""
     query = query.strip()
+    mention_match = _MENTION_RE.match(query)
     try:
-        if query.isdigit():
+        if mention_match:
+            discord_id = int(mention_match.group(1))
+            row = bot.db.get_by_discord_id(discord_id)
+            if row is None:
+                await interaction.followup.send(
+                    embed=_info_embed(f"ℹ️ <@{discord_id}> has no registered nation.")
+                )
+                return
+            nation_info = await pnw.get_nation_with_cities(int(row["nation_id"]))
+            if nation_info is None:
+                await interaction.followup.send(
+                    embed=_info_embed(
+                        f"ℹ️ Could not find nation ID `{row['nation_id']}` for <@{discord_id}>."
+                    )
+                )
+                return
+            nation, _cities = nation_info
+            if nation.alliance_id <= 0:
+                await interaction.followup.send(
+                    embed=_info_embed(
+                        f"ℹ️ [{nation.nation_name}]({_nation_url(nation.nation_id, base_url)}) is not currently in an alliance."
+                    )
+                )
+                return
+            info = await pnw.get_alliance_by_id(nation.alliance_id)
+        elif query.isdigit():
             info = await pnw.get_alliance_by_id(int(query))
         else:
             info = await pnw.get_alliance_by_name(query)
@@ -932,9 +961,9 @@ bot.tree.add_command(alliance_group)
 
 @alliance_group.command(
     name="info",
-    description="Look up a Politics and War alliance by ID or name.",
+    description="Look up a Politics and War alliance by ID, name, or @mention.",
 )
-@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+@app_commands.describe(query="Alliance ID, alliance name, or a @mention of a registered member.")
 async def alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_find(interaction, bot.pnw, query)
@@ -1512,6 +1541,36 @@ _LOCUTUS_RES_KEYS = (
     "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum",
 )
 
+_SUGGESTION_DM_USERNAMES = ("glaernsich", "glaernischtheonly")
+
+
+async def _send_suggestion_dms(
+    bot_client: discord.Client, message: str
+) -> tuple[list[str], list[str]]:
+    """Attempt to DM configured usernames; return (sent_to, missing)."""
+    wanted = {u.lower() for u in _SUGGESTION_DM_USERNAMES}
+    found: dict[str, discord.User | discord.Member] = {}
+
+    for guild in bot_client.guilds:
+        for member in guild.members:
+            for handle in {member.name.lower(), member.display_name.lower(), (member.global_name or "").lower()}:
+                if handle in wanted and handle not in found:
+                    found[handle] = member
+
+    sent_to: list[str] = []
+    for username in _SUGGESTION_DM_USERNAMES:
+        user_obj = found.get(username.lower())
+        if user_obj is None:
+            continue
+        try:
+            await user_obj.send(message)
+            sent_to.append(username)
+        except Exception:
+            log.exception("Failed to DM %s for /suggestion", username)
+
+    missing = [u for u in _SUGGESTION_DM_USERNAMES if u not in sent_to]
+    return sent_to, missing
+
 
 @bot.tree.command(
     name="send",
@@ -1623,6 +1682,63 @@ async def send_resources(
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(
+    name="suggestion",
+    description="Send a suggestion to leadership via Discord DMs.",
+)
+@app_commands.describe(content="Your suggestion text.")
+async def suggestion(interaction: discord.Interaction, content: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+
+    if not await _check_member_access(interaction):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need the **Member** role to use this command."),
+            ephemeral=True,
+        )
+        return
+
+    body = content.strip()
+    if not body:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Suggestion content cannot be empty."),
+            ephemeral=True,
+        )
+        return
+
+    if len(body) > 1800:
+        await interaction.followup.send(
+            embed=_error_embed("❌ Suggestion is too long. Please keep it under 1800 characters."),
+            ephemeral=True,
+        )
+        return
+
+    dm_message = (
+        "📬 **New /suggestion submission**\n"
+        f"From: {interaction.user} (ID: {interaction.user.id})\n"
+        f"Guild: {interaction.guild.name if interaction.guild else 'DM/Unknown'}\n"
+        f"Content:\n{body}"
+    )
+
+    dm_sent_to, dm_missing = await _send_suggestion_dms(bot, dm_message)
+
+    status_lines = [
+        (
+            f"✅ DMs sent to: {', '.join(f'`{u}`' for u in dm_sent_to)}."
+            if dm_sent_to
+            else "⚠️ No suggestion DMs were delivered."
+        ),
+    ]
+    if dm_missing:
+        status_lines.append(
+            "ℹ️ Could not DM: " + ", ".join(f"`{u}`" for u in dm_missing) + "."
+        )
+
+    await interaction.followup.send(
+        embed=_success_embed("\n".join(status_lines)),
+        ephemeral=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # /test  (command group — uses the PnW test API)
 # ---------------------------------------------------------------------------
@@ -1655,9 +1771,9 @@ test_group.add_command(test_alliance_group)
 
 @test_alliance_group.command(
     name="info",
-    description="Look up a PnW alliance via the TEST API by ID or name.",
+    description="Look up a PnW alliance via the TEST API by ID, name, or @mention.",
 )
-@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+@app_commands.describe(query="Alliance ID, alliance name, or a @mention of a registered member.")
 async def test_alliance_find(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_find(interaction, bot.pnw_test, query, base_url=_PNW_TEST_BASE_URL)
@@ -3288,16 +3404,29 @@ async def city_cost_command(
 async def _handle_revenue(
     interaction: discord.Interaction,
     pnw: PnWClient,
-    query: str,
+    query: str | None,
 ) -> None:
-    """Resolve a nation from *query* (same semantics as /whois) and display revenue."""
-    query = query.strip()
+    """Resolve a nation from *query* (same semantics as /whois) and display revenue.
+
+    If query is omitted, defaults to the invoking user's registered nation.
+    """
+    query = (query or "").strip()
 
     # --- resolve nation_id from the query (mirrors _handle_whois logic) ---
     nation_id: Optional[int] = None
 
-    mention_match = _MENTION_RE.match(query)
-    if mention_match:
+    if not query:
+        row = bot.db.get_by_discord_id(interaction.user.id)
+        if row is None:
+            await interaction.followup.send(
+                embed=_info_embed(
+                    "ℹ️ You are not registered. Use `/register <nation_id>` "
+                    "or provide a query to `/revenue`."
+                )
+            )
+            return
+        nation_id = int(row["nation_id"])
+    elif (mention_match := _MENTION_RE.match(query)):
         target_id = int(mention_match.group(1))
         row = bot.db.get_by_discord_id(target_id)
         if row is not None:
@@ -3428,12 +3557,12 @@ async def _handle_revenue(
 
 @bot.tree.command(
     name="revenue",
-    description="Show estimated gross daily revenue for a PnW nation.",
+    description="Show estimated gross daily revenue for a PnW nation (or your own if omitted).",
 )
 @app_commands.describe(
-    query="A nation ID, @mention, nation name, or Discord username."
+    query="Optional: a nation ID, @mention, nation name, or Discord username."
 )
-async def revenue_command(interaction: discord.Interaction, query: str) -> None:
+async def revenue_command(interaction: discord.Interaction, query: str | None = None) -> None:
     await interaction.response.defer()
     await _handle_revenue(interaction, bot.pnw, query)
 
@@ -3442,12 +3571,12 @@ _HELP_COMMANDS = [
     ("/register <nation_id>", "Link your Discord account to a PnW nation."),
     ("/unregister", "Remove your PnW nation registration."),
     ("/whois <query>", "Look up a nation by ID, name, or @mention."),
-    ("/revenue <query>", "Show estimated gross daily revenue for a nation (same lookup as /whois)."),
+    ("/revenue [query]", "Show estimated gross daily revenue for a nation; defaults to your registered nation."),
     ("/city cost <current> [target] [options]", "Calculate city purchase cost(s) using the live dynamic formula."),
-    ("/alliance info <query>", "Look up an alliance by ID or name."),
+    ("/alliance info <query>", "Look up an alliance by ID, name, or @mention."),
     ("/alliance members <query>", "List members of an alliance (10 per page)."),
     ("/test whois <query>", "Look up a nation via the PnW test API."),
-    ("/test alliance info <query>", "Look up an alliance via the PnW test API."),
+    ("/test alliance info <query>", "Look up an alliance via the PnW test API by ID, name, or @mention."),
     ("/gov", "Show members who hold a configured government role."),
     ("/slots", "Show open defensive war slots for monitored alliances."),
     ("/roles setup", "Map server roles to government departments. *(admin)*"),
@@ -3469,6 +3598,7 @@ _HELP_COMMANDS = [
     ("/war range targets [user]", "Show /slots nations in your (or another user's) war range with open defensive slots."),
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
+    ("/suggestion <content>", "Submit a suggestion via Discord DMs to leadership."),
     ("/help", "Show this help message."),
 ]
 
@@ -3490,4 +3620,3 @@ async def help_command(interaction: discord.Interaction) -> None:
 
 if __name__ == "__main__":
     bot.run(config.DISCORD_TOKEN)
-
