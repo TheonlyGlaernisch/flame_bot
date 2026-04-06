@@ -50,3 +50,10 @@ MONGODB_URI: str = (
 # If API_KEY is not set the API server will not start.
 API_KEY: str | None = os.getenv("API_KEY") or None
 API_PORT: int = int(os.getenv("API_PORT", "8080"))
+
+# GUILD_ID is optional for Discord command behavior, but required when the
+# bar3 HTTP API is enabled so /api/roles can resolve members in a guild.
+if API_KEY and GUILD_ID is None:
+    raise EnvironmentError(
+        "Environment variable 'GUILD_ID' is required when 'API_KEY' is set."
+    )
