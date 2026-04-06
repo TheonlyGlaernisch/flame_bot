@@ -104,7 +104,7 @@ Commands
     The new key is persisted in the database and reloaded on restart.
 
 /suggestion <content>
-    Send a suggestion to leadership via Discord DMs.
+    Send a suggestion to the dev via Discord DMs.
 
 """
 from __future__ import annotations
