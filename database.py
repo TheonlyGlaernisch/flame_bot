@@ -131,18 +131,29 @@ class Database:
 
     # Guild listing helpers ---------------------------------------------------
 
-    def upsert_guild(self, guild_id: int, guild_name: str) -> None:
+    def upsert_guild(self, guild_id: int, guild_name: str, invite_link: str | None = None) -> None:
         """Insert or update a guild name row for a guild the bot is in."""
         now = datetime.now(timezone.utc).isoformat()
         self._guilds.update_one(
             {"guild_id": str(guild_id)},
-            {"$set": {"guild_id": str(guild_id), "guild_name": guild_name, "updated_at": now}},
+            {
+                "$set": {
+                    "guild_id": str(guild_id),
+                    "guild_name": guild_name,
+                    "invite_link": invite_link,
+                    "updated_at": now,
+                }
+            },
             upsert=True,
         )
 
     def get_guild(self, guild_id: int) -> Optional[dict]:
         """Return the persisted guild document, or None if missing."""
         return self._guilds.find_one({"guild_id": str(guild_id)}, {"_id": 0})
+
+    def get_all_guilds(self) -> list[dict]:
+        """Return all persisted guild metadata documents."""
+        return list(self._guilds.find({}, {"_id": 0}))
 
     # Bot-level config helpers -----------------------------------------------
 

@@ -120,27 +120,39 @@ class TestDatabase:
 
     def test_upsert_and_get_guild(self):
         db = _make_db()
-        db.upsert_guild(1, "Guild One")
+        db.upsert_guild(1, "Guild One", "https://discord.gg/example")
         row = db.get_guild(1)
         assert row is not None
         assert row["guild_id"] == "1"
         assert row["guild_name"] == "Guild One"
+        assert row["invite_link"] == "https://discord.gg/example"
         # Ensure timestamp is persisted and parseable.
         datetime.fromisoformat(row["updated_at"])
 
     def test_upsert_guild_overwrites_name(self):
         db = _make_db()
-        db.upsert_guild(1, "Old Name")
+        db.upsert_guild(1, "Old Name", "https://discord.gg/old")
         first = db.get_guild(1)
-        db.upsert_guild(1, "New Name")
+        db.upsert_guild(1, "New Name", "https://discord.gg/new")
         second = db.get_guild(1)
         assert first is not None and second is not None
         assert second["guild_name"] == "New Name"
+        assert second["invite_link"] == "https://discord.gg/new"
         assert second["updated_at"] >= first["updated_at"]
 
     def test_get_guild_returns_none_when_missing(self):
         db = _make_db()
         assert db.get_guild(999) is None
+
+    def test_get_all_guilds_returns_all_documents(self):
+        db = _make_db()
+        db.upsert_guild(1, "Guild One", "https://discord.gg/one")
+        db.upsert_guild(2, "Guild Two", "https://discord.gg/two")
+        rows = db.get_all_guilds()
+        by_id = {row["guild_id"]: row for row in rows}
+        assert set(by_id) == {"1", "2"}
+        assert by_id["1"]["guild_name"] == "Guild One"
+        assert by_id["2"]["invite_link"] == "https://discord.gg/two"
 
 
 # ---------------------------------------------------------------------------
