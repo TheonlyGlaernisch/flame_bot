@@ -14,6 +14,8 @@ class Database:
         self._col.create_index("discord_id", unique=True)
         self._col.create_index("nation_id", unique=True)
         self._guild_config = self._client["TRF"]["guild_config"]
+        self._guilds = self._client["TRF"]["guilds"]
+        self._guilds.create_index("guild_id", unique=True)
         self._bot_config = self._client["TRF"]["bot_config"]
 
     # ------------------------------------------------------------------
@@ -126,6 +128,21 @@ class Database:
             {"$set": {"guild_id": str(guild_id), "alliance_id": alliance_id}},
             upsert=True,
         )
+
+    # Guild listing helpers ---------------------------------------------------
+
+    def upsert_guild(self, guild_id: int, guild_name: str) -> None:
+        """Insert or update a guild name row for a guild the bot is in."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._guilds.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": {"guild_id": str(guild_id), "guild_name": guild_name, "updated_at": now}},
+            upsert=True,
+        )
+
+    def get_guild(self, guild_id: int) -> Optional[dict]:
+        """Return the persisted guild document, or None if missing."""
+        return self._guilds.find_one({"guild_id": str(guild_id)}, {"_id": 0})
 
     # Bot-level config helpers -----------------------------------------------
 
