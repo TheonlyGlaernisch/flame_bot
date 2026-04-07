@@ -110,6 +110,7 @@ Commands
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from typing import Optional
@@ -421,19 +422,101 @@ class FlameBot(discord.Client):
         self.pnw = PnWClient(config.PNW_API_KEY)
         self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, rest_url=PNW_TEST_REST_URL)
         self._api_runner: web.AppRunner | None = None
+        self._invite_refresh_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
         log.info("Slash commands synced globally.")
 
+    async def _create_guild_invite(self, guild: discord.Guild) -> str | None:
+        """Create and return a non-expiring, unlimited-use invite URL for this guild."""
+        me = guild.me
+        if me is None:
+            return None
+        candidate_channels: list[discord.TextChannel] = []
+        if isinstance(guild.system_channel, discord.TextChannel):
+            candidate_channels.append(guild.system_channel)
+        candidate_channels.extend(guild.text_channels)
+
+        seen_channel_ids: set[int] = set()
+        for channel in candidate_channels:
+            if channel.id in seen_channel_ids:
+                continue
+            seen_channel_ids.add(channel.id)
+            if not channel.permissions_for(me).create_instant_invite:
+                continue
+            try:
+                invite = await channel.create_invite(
+                    max_age=0,
+                    max_uses=0,
+                    unique=True,
+                    reason="Persist guild invite link for flame_bot metadata.",
+                )
+                return invite.url
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+        return None
+
+    async def _persist_guild(self, guild: discord.Guild) -> None:
+        """Persist this guild's ID, name, and invite link in MongoDB."""
+        invite_link = await self._create_guild_invite(guild)
+        self.db.upsert_guild(guild.id, guild.name, invite_link)
+
+    async def _invite_exists(self, invite_link: str) -> bool:
+        """Return True when the invite URL still resolves, False when deleted/invalid."""
+        try:
+            await self.fetch_invite(invite_link)
+            return True
+        except discord.NotFound:
+            return False
+        except (discord.Forbidden, discord.HTTPException):
+            return False
+
+    async def _refresh_deleted_guild_invites_once(self) -> None:
+        """Recreate and persist invites for guilds whose stored invite is missing."""
+        for doc in self.db.get_all_guilds():
+            guild_id_raw = doc.get("guild_id")
+            if not guild_id_raw:
+                continue
+            guild = self.get_guild(int(guild_id_raw))
+            if guild is None:
+                continue
+            invite_link = doc.get("invite_link")
+            if invite_link and await self._invite_exists(invite_link):
+                continue
+            await self._persist_guild(guild)
+            log.info("Refreshed deleted/missing invite for guild %s (%d).", guild.name, guild.id)
+
+    async def _daily_invite_refresh_loop(self) -> None:
+        """Check once per day whether stored invites still exist, and recreate if missing."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            await self._refresh_deleted_guild_invites_once()
+            await asyncio.sleep(24 * 60 * 60)
+
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%d)", self.user, self.user.id)
+        for guild in self.guilds:
+            await self._persist_guild(guild)
+        log.info("Persisted metadata for %d guilds to MongoDB.", len(self.guilds))
+        if self._invite_refresh_task is None or self._invite_refresh_task.done():
+            self._invite_refresh_task = asyncio.create_task(self._daily_invite_refresh_loop())
+            log.info("Started daily guild invite refresh loop.")
         overridden_key = self.db.get_pnw_api_key()
         if overridden_key:
             self.pnw._api_key = overridden_key
             log.info("Loaded overridden PnW API key from database.")
         if config.API_KEY:
             await self._start_api()
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        await self._persist_guild(guild)
+        log.info("Joined guild %s (%d); name persisted.", guild.name, guild.id)
+
+    async def on_guild_update(self, before: discord.Guild, after: discord.Guild) -> None:
+        if before.name != after.name:
+            await self._persist_guild(after)
+            log.info("Guild renamed %s -> %s (%d); name persisted.", before.name, after.name, after.id)
 
     async def _start_api(self) -> None:
         app = create_app(
@@ -454,6 +537,10 @@ class FlameBot(discord.Client):
     async def close(self) -> None:
         await self.pnw.close()
         await self.pnw_test.close()
+        if self._invite_refresh_task is not None:
+            self._invite_refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._invite_refresh_task
         if self._api_runner is not None:
             await self._api_runner.cleanup()
         await super().close()
