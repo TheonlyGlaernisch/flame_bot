@@ -90,7 +90,30 @@ class TestPingEndpoint:
             resp = await client.get("/ping")
             assert resp.status == 200
             data = await resp.json()
-            assert data == {"ping": "pong"}
+            assert data == {"ping": "pong", "sigma": True, "skibidi": "toilet"}
+
+
+class TestGlaernischEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_200_with_touch_grass(self):
+        app = create_app(lambda: None, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/glaernisch")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"touch": "grass"}
+
+
+class TestEggEndpoint:
+    @pytest.mark.asyncio
+    async def test_returns_200_with_svg_image(self):
+        app = create_app(lambda: None, API_KEY)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/egg")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("image/svg+xml")
+            body = await resp.text()
+            assert "<svg" in body
 
 
 class TestRolesEndpoint:
@@ -261,4 +284,3 @@ class TestRolesEndpoint:
                 "bar3_client": False,
                 "bar3_server": False,
             }
-

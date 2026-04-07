@@ -15,7 +15,15 @@ GET /health
     liveness probe for uptime monitors and deployment platforms.
 
 GET /ping
-    Returns ``{"ping": "pong"}`` (200 OK).  Simple round-trip check.
+    Returns
+    ``{"ping": "pong", "sigma": true, "skibidi": "toilet"}`` (200 OK).
+    Simple round-trip check.
+
+GET /glaernisch
+    Returns ``{"touch": "grass"}`` (200 OK).
+
+GET /egg
+    Returns an egg-themed image (200 OK).
 
 GET /api/roles/{discord_id}
     Returns the bar3 role status for the given Discord user ID.
@@ -96,7 +104,31 @@ def create_app(
         return web.json_response({"status": "ok"})
 
     async def ping(request: web.Request) -> web.Response:
-        return web.json_response({"ping": "pong"})
+        return web.json_response(
+            {"ping": "pong", "sigma": True, "skibidi": "toilet"}
+        )
+
+    async def glaernisch(request: web.Request) -> web.Response:
+        return web.json_response({"touch": "grass"})
+
+    async def egg(request: web.Request) -> web.Response:
+        svg = """<svg xmlns="http://www.w3.org/2000/svg" width="320" height="420" viewBox="0 0 320 420">
+  <rect width="320" height="420" fill="#8bcf6b"/>
+  <ellipse cx="160" cy="300" rx="110" ry="95" fill="#f8de57"/>
+  <circle cx="160" cy="180" r="55" fill="#f7d84d"/>
+  <ellipse cx="135" cy="165" rx="8" ry="10" fill="#111"/>
+  <ellipse cx="185" cy="165" rx="8" ry="10" fill="#111"/>
+  <polygon points="160,178 140,195 180,195" fill="#ea9f2d"/>
+  <ellipse cx="120" cy="95" rx="22" ry="48" fill="#f4d9df" transform="rotate(-18 120 95)"/>
+  <ellipse cx="200" cy="95" rx="22" ry="48" fill="#f4d9df" transform="rotate(18 200 95)"/>
+  <ellipse cx="120" cy="95" rx="16" ry="40" fill="#fff7fb" transform="rotate(-18 120 95)"/>
+  <ellipse cx="200" cy="95" rx="16" ry="40" fill="#fff7fb" transform="rotate(18 200 95)"/>
+  <path d="M120 215 C80 220, 70 250, 95 265" stroke="#f8de57" stroke-width="18" fill="none" stroke-linecap="round"/>
+  <path d="M200 215 C240 220, 250 250, 225 265" stroke="#f8de57" stroke-width="18" fill="none" stroke-linecap="round"/>
+  <path d="M145 390 L130 415 L152 408 Z" fill="#d9872a"/>
+  <path d="M180 390 L200 415 L170 410 Z" fill="#d9872a"/>
+</svg>"""
+        return web.Response(text=svg, content_type="image/svg+xml")
 
     async def get_roles(request: web.Request) -> web.Response:
         if not _check_api_key(request, api_key):
@@ -150,5 +182,7 @@ def create_app(
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/ping", ping)
+    app.router.add_get("/glaernisch", glaernisch)
+    app.router.add_get("/egg", egg)
     app.router.add_get("/api/roles/{discord_id}", get_roles)
     return app
