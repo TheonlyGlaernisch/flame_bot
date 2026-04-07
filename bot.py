@@ -426,14 +426,30 @@ class FlameBot(discord.Client):
         await self.tree.sync()
         log.info("Slash commands synced globally.")
 
+    def _persist_guild(self, guild: discord.Guild) -> None:
+        """Persist this guild's ID + name in MongoDB."""
+        self.db.upsert_guild(guild.id, guild.name)
+
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%d)", self.user, self.user.id)
+        for guild in self.guilds:
+            self._persist_guild(guild)
+        log.info("Persisted %d guild names to MongoDB.", len(self.guilds))
         overridden_key = self.db.get_pnw_api_key()
         if overridden_key:
             self.pnw._api_key = overridden_key
             log.info("Loaded overridden PnW API key from database.")
         if config.API_KEY:
             await self._start_api()
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        self._persist_guild(guild)
+        log.info("Joined guild %s (%d); name persisted.", guild.name, guild.id)
+
+    async def on_guild_update(self, before: discord.Guild, after: discord.Guild) -> None:
+        if before.name != after.name:
+            self._persist_guild(after)
+            log.info("Guild renamed %s -> %s (%d); name persisted.", before.name, after.name, after.id)
 
     async def _start_api(self) -> None:
         app = create_app(
