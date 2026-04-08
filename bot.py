@@ -121,6 +121,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import re
 from typing import Optional
 
@@ -162,6 +163,7 @@ logging.basicConfig(
 log = logging.getLogger("flame_bot")
 
 BOT_NAME = "flame_bot"
+DISCORD_COMMAND_COOLDOWN_SECONDS = 2.0
 
 # ---------------------------------------------------------------------------
 # Role helpers
@@ -432,10 +434,28 @@ class FlameBot(discord.Client):
         self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, rest_url=PNW_TEST_REST_URL)
         self._api_runner: web.AppRunner | None = None
         self._invite_refresh_task: asyncio.Task[None] | None = None
+        self._command_cooldowns: dict[int, float] = {}
 
     async def setup_hook(self) -> None:
+        self.tree.add_check(self._global_command_cooldown_check)
         await self.tree.sync()
         log.info("Slash commands synced globally.")
+
+    async def _global_command_cooldown_check(self, interaction: discord.Interaction) -> bool:
+        """Enforce a small per-user global cooldown across slash commands."""
+        now = time.monotonic()
+        user_id = interaction.user.id
+        last_used = self._command_cooldowns.get(user_id)
+        if last_used is not None:
+            elapsed = now - last_used
+            if elapsed < DISCORD_COMMAND_COOLDOWN_SECONDS:
+                retry_after = DISCORD_COMMAND_COOLDOWN_SECONDS - elapsed
+                raise app_commands.CommandOnCooldown(
+                    cooldown=app_commands.Cooldown(1, DISCORD_COMMAND_COOLDOWN_SECONDS),
+                    retry_after=retry_after,
+                )
+        self._command_cooldowns[user_id] = now
+        return True
 
     async def _create_guild_invite(self, guild: discord.Guild) -> str | None:
         """Create and return a non-expiring, unlimited-use invite URL for this guild."""
@@ -3920,6 +3940,25 @@ async def help_command(interaction: discord.Interaction) -> None:
         color=discord.Color.blurple(),
     )
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    """Handle global app-command errors that are not captured per-command."""
+    if isinstance(error, app_commands.CommandOnCooldown):
+        retry_after = max(error.retry_after, 0.0)
+        embed = _error_embed(
+            f"⏳ You're sending commands too quickly. "
+            f"Please wait **{retry_after:.1f}s** and try again."
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    raise error
 
 
 # ---------------------------------------------------------------------------
