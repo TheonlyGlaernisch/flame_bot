@@ -423,12 +423,22 @@ def _success_embed(description: str) -> discord.Embed:
 # ---------------------------------------------------------------------------
 
 
+class FlameCommandTree(app_commands.CommandTree):
+    """Command tree with a global interaction check for all app commands."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        client = self.client
+        if isinstance(client, FlameBot):
+            return await client._global_command_cooldown_check(interaction)
+        return True
+
+
 class FlameBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.members = True
         super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
+        self.tree = FlameCommandTree(self)
         self.db = Database(config.MONGODB_URI)
         self.pnw = PnWClient(config.PNW_API_KEY)
         self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, rest_url=PNW_TEST_REST_URL)
