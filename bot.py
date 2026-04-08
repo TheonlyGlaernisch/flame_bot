@@ -547,6 +547,27 @@ class FlameBot(discord.Client):
             await self._persist_guild(after)
             log.info("Guild renamed %s -> %s (%d); name persisted.", before.name, after.name, after.id)
 
+    async def on_member_join(self, member: discord.Member) -> None:
+        guild_id = member.guild.id
+        cfg = self.db.get_welcome_config(guild_id)
+        if not cfg["enabled"]:
+            return
+
+        channel_id = cfg["channel_id"]
+        if channel_id is None:
+            return
+        channel = member.guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            log.warning("Guild %d has invalid welcome channel ID %s.", guild_id, channel_id)
+            return
+
+        template = str(cfg["message"] or "Welcome !(user)!")
+        message = template.replace("!(user)", member.mention)
+        try:
+            await channel.send(message)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception("Failed to send welcome message in guild %d channel %d.", guild_id, channel.id)
+
     async def _start_api(self) -> None:
         app = create_app(
             guild_getter=lambda: self.get_guild(config.GUILD_ID) if config.GUILD_ID else None,
@@ -2428,6 +2449,108 @@ async def admin_api_key_set_error(
 
 
 # ---------------------------------------------------------------------------
+# /admin welcome  (subgroup)
+# ---------------------------------------------------------------------------
+
+admin_welcome_group = app_commands.Group(
+    name="welcome",
+    description="Configure welcome messages for new members.",
+)
+admin_group.add_command(admin_welcome_group)
+
+
+@admin_welcome_group.command(
+    name="set_message",
+    description="Set the welcome message template. Use !(user) to mention the new member.",
+)
+@app_commands.describe(
+    message="Welcome message template. Include !(user) where the new member mention should appear."
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_welcome_set_message(interaction: discord.Interaction, message: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    if not message.strip():
+        await interaction.followup.send("❌ Welcome message cannot be empty.", ephemeral=True)
+        return
+    bot.db.set_welcome_config(guild_id, message=message.strip())
+    await interaction.followup.send(
+        f"✅ Welcome message updated.\nPreview: {message.replace('!(user)', interaction.user.mention)}",
+        ephemeral=True,
+    )
+
+
+@admin_welcome_group.command(
+    name="set_channel",
+    description="Set the channel where welcome messages are posted.",
+)
+@app_commands.describe(channel="Text channel to post welcome messages in.")
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_welcome_set_channel(
+    interaction: discord.Interaction, channel: discord.TextChannel
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    bot.db.set_welcome_config(guild_id, channel_id=channel.id)
+    await interaction.followup.send(
+        f"✅ Welcome channel set to {channel.mention}.",
+        ephemeral=True,
+    )
+
+
+@admin_welcome_group.command(
+    name="toggle",
+    description="Enable or disable welcome messages.",
+)
+@app_commands.describe(enabled="Turn welcome messages on or off.")
+@app_commands.checks.has_permissions(administrator=True)
+async def admin_welcome_toggle(interaction: discord.Interaction, enabled: bool) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild_id = interaction.guild_id or 0
+    bot.db.set_welcome_config(guild_id, enabled=enabled)
+    state = "enabled" if enabled else "disabled"
+    await interaction.followup.send(
+        f"✅ Welcome messages are now **{state}**.",
+        ephemeral=True,
+    )
+
+
+@admin_welcome_group.command(
+    name="show",
+    description="Show the current welcome message configuration.",
+)
+async def admin_welcome_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    guild_id = interaction.guild_id or 0
+    cfg = bot.db.get_welcome_config(guild_id)
+    channel = guild and cfg["channel_id"] and guild.get_channel(int(cfg["channel_id"]))
+    channel_text = channel.mention if isinstance(channel, discord.TextChannel) else "Not set"
+    status_text = "Enabled" if cfg["enabled"] else "Disabled"
+    embed = discord.Embed(title="Welcome Message Settings", color=discord.Color.blurple())
+    embed.add_field(name="Status", value=status_text, inline=True)
+    embed.add_field(name="Channel", value=channel_text, inline=True)
+    embed.add_field(name="Template", value=str(cfg["message"]), inline=False)
+    embed.set_footer(text="Use !(user) to mention the joining member.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@admin_welcome_set_message.error
+@admin_welcome_set_channel.error
+@admin_welcome_toggle.error
+async def admin_welcome_admin_only_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+    else:
+        raise error
+
+
+# ---------------------------------------------------------------------------
 # /admin clear_guild_commands
 # ---------------------------------------------------------------------------
 
@@ -3916,6 +4039,10 @@ _HELP_COMMANDS = [
     ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
+    ("/admin welcome set_message <message>", "Set the welcome template. Use !(user) for the joining member mention. *(admin)*"),
+    ("/admin welcome set_channel <channel>", "Set the channel for welcome posts. *(admin)*"),
+    ("/admin welcome toggle <enabled>", "Enable/disable welcome messages. *(admin)*"),
+    ("/admin welcome show", "Show current welcome-message settings."),
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
