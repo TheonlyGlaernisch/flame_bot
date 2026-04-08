@@ -2477,6 +2477,10 @@ def _build_leaderboard_page(
     if total_pages > 1:
         footer_parts.append(f"Page {page + 1}/{total_pages}")
     footer_parts.append(f"{len(sorted_nations)} members")
+    footer_parts.append(
+        f"mkt ppu g:{prices.gasoline:,.0f} m:{prices.munitions:,.0f} a:{prices.aluminum:,.0f} s:{prices.steel:,.0f}"
+    )
+    footer_parts.append("wars with attacks in lookback window")
     footer_parts.append("📊 total (infra + res dmg)  🏗️ infra  💥 res dmg (enemy res used + unit kills + loot @ mkt)  💰 loot (money + looted res @ mkt)  (/c = per city)")
 
     embed = discord.Embed(
