@@ -825,76 +825,38 @@ class PnWClient:
             return GameInfo()
 
     async def get_trade_prices(self) -> "TradePrice":
-        """Fetch the lowest active buy-offer price for war-relevant resources.
+        """Fetch market prices for war-relevant resources from tradeprices.
 
-        Uses the live trade market: querying open buy orders and taking the
-        lowest bid per resource gives the most conservative (floor) valuation
-        for looted resources and enemy resource consumption.  Falls back to
-        tradeprices averages for any resource with no active buy orders, and
-        falls back entirely to tradeprices averages if the trades query fails.
+        Uses the aggregate market snapshot (`tradeprices`) for gasoline,
+        munitions, aluminum, and steel.
         """
-        _WAR_RESOURCES = {"gasoline", "munitions", "aluminum", "steel"}
-
-        # --- Primary: lowest active buy-order price ---
-        buy_query = """
-        query GetLowestBuyPrices {
-            trades(buy_or_sell: "buy", first: 500) {
+        query = """
+        query GetTradePrices {
+            tradeprices(first: 1) {
                 data {
-                    offer_resource
-                    price
-                    accepted
+                    gasoline
+                    munitions
+                    aluminum
+                    steel
                 }
             }
         }
         """
-        mins: dict[str, float] = {}
         try:
-            data = await self._query(buy_query, {})
-            for t in data.get("data", {}).get("trades", {}).get("data", []):
-                if t.get("accepted"):
-                    continue  # skip completed trades; want open offers only
-                resource = (t.get("offer_resource") or "").lower()
-                if resource not in _WAR_RESOURCES:
-                    continue
-                ppu = float(t.get("price") or 0)
-                if ppu > 0 and (resource not in mins or ppu < mins[resource]):
-                    mins[resource] = ppu
+            data = await self._query(query, {})
+            prices = data.get("data", {}).get("tradeprices", {}).get("data", [])
+            if prices:
+                p = prices[0]
+                return TradePrice(
+                    gasoline=float(p.get("gasoline") or 0),
+                    munitions=float(p.get("munitions") or 0),
+                    aluminum=float(p.get("aluminum") or 0),
+                    steel=float(p.get("steel") or 0),
+                )
         except Exception:
-            log.exception("PnW API error fetching lowest buy prices")
+            log.exception("PnW API error fetching tradeprices")
 
-        # --- Fallback: tradeprices averages for any missing resource ---
-        if len(mins) < len(_WAR_RESOURCES):
-            avg_query = """
-            query GetTradePrices {
-                tradeprices(first: 1) {
-                    data {
-                        gasoline
-                        munitions
-                        aluminum
-                        steel
-                    }
-                }
-            }
-            """
-            try:
-                data = await self._query(avg_query, {})
-                prices = data.get("data", {}).get("tradeprices", {}).get("data", [])
-                if prices:
-                    p = prices[0]
-                    for res in _WAR_RESOURCES:
-                        if res not in mins:
-                            fallback = float(p.get(res) or 0)
-                            if fallback > 0:
-                                mins[res] = fallback
-            except Exception:
-                pass
-
-        return TradePrice(
-            gasoline=mins.get("gasoline", 0.0),
-            munitions=mins.get("munitions", 0.0),
-            aluminum=mins.get("aluminum", 0.0),
-            steel=mins.get("steel", 0.0),
-        )
+        return TradePrice()
 
     async def get_alliance_damage(
         self,
@@ -907,7 +869,7 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Uses the Locutus per-attack attribution model:
+        Uses a per-attack attribution model:
 
         Phase 1 – wars query: collects qualifying war IDs and records which
         nations are alliance members (attacker or defender).  No war-level
@@ -976,7 +938,7 @@ class PnWClient:
         # Phase 1: collect qualifying wars and nation membership.
         #
         # War-level damage totals are intentionally NOT used here; all damage
-        # data is derived from per-attack records in Phase 2 (Locutus model).
+        # data is derived from per-attack records in Phase 2.
         # ------------------------------------------------------------------
         page = 1
         while True:
@@ -1073,7 +1035,7 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: per-attack attribution (Locutus model).
+        # Phase 2: per-attack attribution.
         #
         # For every attack initiated by an alliance member (att_id in results):
         #   • def_*_used                 → enemy resource cost (all attacks)
@@ -1139,7 +1101,6 @@ class PnWClient:
                     att_id = int(attack.get("att_id") or 0)
                     if att_id not in results:
                         continue
-
                     attack_type = str(attack.get("type") or "")
                     # VICTORY only occurs when the war attacker's resistance
                     # reaches 0, meaning the attacker always wins.  The API
@@ -1848,4 +1809,3 @@ def compute_nation_revenue(
         rev.avg_commerce = total_commerce / len(cities)
 
     return rev
-
