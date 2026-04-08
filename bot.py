@@ -77,10 +77,10 @@ Commands
     Lists any members found on the wrong color together with their
     current color and the expected color.
 
-/damage
-    Show damage dealt by each member of the configured primary alliance
-    over the past 7 days, sorted by total damage (infra destroyed value
-    + money looted) descending.
+/damage leaderboard
+    Show damage dealt by each member of the configured
+    primary alliance over the past 7 days, with interactive sorting
+    (total, loot, infra, res dmg, and total per city).
 
 /send <receiver> [sender] [bank_note] [money] [food] [coal] [oil] [uranium] [iron]
       [bauxite] [lead] [gasoline] [munitions] [steel] [aluminum]
@@ -2389,6 +2389,7 @@ _LEADERBOARD_PAGE_SIZE = 10
 
 # Sort-mode keys and their display labels (button text).
 _LEADERBOARD_SORT_LABELS: dict[str, str] = {
+    "total":     "📊 Total",
     "loot":      "💰 Loot",
     "dmg_city":  "💥 /City",
     "infra":     "🏗️ Infra",
@@ -2412,6 +2413,37 @@ def _lb_stat(val: float, emoji: str, cities: int, active: bool) -> str:
     return f"**{text}**" if active else text
 
 
+def _damage_metrics(s: dict, prices: "TradePrice") -> dict[str, float]:
+    """Return pre-computed damage metrics for one nation."""
+    infra = float(s["infra_value"])
+    res_dmg = prices.resource_value(
+        gasoline=s["def_gas_used"] + s["gas_looted"],
+        munitions=s["def_mun_used"] + s["mun_looted"],
+        aluminum=s["def_alum_used"] + s["alum_looted"],
+        steel=s["def_steel_used"] + s["steel_looted"],
+    ) + prices.unit_kill_value(
+        soldiers=s["def_soldiers_killed"],
+        tanks=s["def_tanks_killed"],
+        aircraft=s["def_aircraft_killed"],
+        ships=s["def_ships_sunk"],
+    )
+    loot = float(s["money_looted"]) + prices.resource_value(
+        gasoline=s["gas_looted"],
+        munitions=s["mun_looted"],
+        aluminum=s["alum_looted"],
+        steel=s["steel_looted"],
+    )
+    total = infra + res_dmg
+    cities = max(int(s["num_cities"]), 1)
+    return {
+        "infra": infra,
+        "res_dmg": res_dmg,
+        "loot": loot,
+        "total": total,
+        "dmg_city": total / cities,
+    }
+
+
 def _build_leaderboard_page(
     sorted_nations: list[tuple[int, dict]],
     prices: "TradePrice",
@@ -2428,29 +2460,13 @@ def _build_leaderboard_page(
     for i, (nation_id, s) in enumerate(page_slice):
         rank = start + i + 1
         cities = s["num_cities"]
-        infra = s["infra_value"]
-        res_dmg = prices.resource_value(
-            gasoline=s["def_gas_used"] + s["gas_looted"],
-            munitions=s["def_mun_used"] + s["mun_looted"],
-            aluminum=s["def_alum_used"] + s["alum_looted"],
-            steel=s["def_steel_used"] + s["steel_looted"],
-        ) + prices.unit_kill_value(
-            soldiers=s["def_soldiers_killed"],
-            tanks=s["def_tanks_killed"],
-            aircraft=s["def_aircraft_killed"],
-            ships=s["def_ships_sunk"],
-        )
-        loot = s["money_looted"] + prices.resource_value(
-            gasoline=s["gas_looted"],
-            munitions=s["mun_looted"],
-            aluminum=s["alum_looted"],
-            steel=s["steel_looted"],
-        )
+        metrics = _damage_metrics(s, prices)
         city_str = f" · {cities}🏙️" if cities > 0 else ""
         stats = "  ".join([
-            _lb_stat(infra,   "🏗️", cities, sort_mode in ("infra", "dmg_city")),
-            _lb_stat(res_dmg, "💥", cities, sort_mode in ("res_dmg", "dmg_city")),
-            _lb_stat(loot,    "💰", cities, sort_mode == "loot"),
+            _lb_stat(metrics["total"], "📊", cities, sort_mode in ("total", "dmg_city")),
+            _lb_stat(metrics["infra"], "🏗️", cities, sort_mode == "infra"),
+            _lb_stat(metrics["res_dmg"], "💥", cities, sort_mode == "res_dmg"),
+            _lb_stat(metrics["loot"], "💰", cities, sort_mode == "loot"),
         ])
         lines.append(
             f"**{rank}.** [{s['nation_name']}]({_nation_url(nation_id)}){city_str}\n{stats}"
@@ -2461,7 +2477,7 @@ def _build_leaderboard_page(
     if total_pages > 1:
         footer_parts.append(f"Page {page + 1}/{total_pages}")
     footer_parts.append(f"{len(sorted_nations)} members")
-    footer_parts.append("🏗️ infra  💥 res dmg (enemy res used + unit kills + loot @ mkt)  💰 loot (money + looted res @ mkt)  (/c = per city)")
+    footer_parts.append("📊 total (infra + res dmg)  🏗️ infra  💥 res dmg (enemy res used + unit kills + loot @ mkt)  💰 loot (money + looted res @ mkt)  (/c = per city)")
 
     embed = discord.Embed(
         title=f"⚔️ War Leaderboard — Past {_DAMAGE_LOOKBACK_DAYS} Days",
@@ -2486,7 +2502,7 @@ class LeaderboardView(discord.ui.View):
         self,
         all_nations: list[tuple[int, dict]],
         prices: "TradePrice",
-        sort_mode: str = "loot",
+        sort_mode: str = "total",
         page: int = 0,
     ) -> None:
         super().__init__(timeout=600)
@@ -2500,39 +2516,10 @@ class LeaderboardView(discord.ui.View):
 
     # ---- sorting helpers ----
 
-    def _loot(self, s: dict) -> float:
-        return s["money_looted"] + self._prices.resource_value(
-            gasoline=s["gas_looted"],
-            munitions=s["mun_looted"],
-            aluminum=s["alum_looted"],
-            steel=s["steel_looted"],
-        )
-
-    def _res_dmg(self, s: dict) -> float:
-        return self._prices.resource_value(
-            gasoline=s["def_gas_used"] + s["gas_looted"],
-            munitions=s["def_mun_used"] + s["mun_looted"],
-            aluminum=s["def_alum_used"] + s["alum_looted"],
-            steel=s["def_steel_used"] + s["steel_looted"],
-        ) + self._prices.unit_kill_value(
-            soldiers=s["def_soldiers_killed"],
-            tanks=s["def_tanks_killed"],
-            aircraft=s["def_aircraft_killed"],
-            ships=s["def_ships_sunk"],
-        )
-
     def _sort_key(self, item: tuple[int, dict]) -> float:
         s = item[1]
-        cities = max(s["num_cities"], 1)
-        if self.sort_mode == "loot":
-            return self._loot(s)
-        if self.sort_mode == "dmg_city":
-            return (s["infra_value"] + self._res_dmg(s)) / cities
-        if self.sort_mode == "infra":
-            return s["infra_value"]
-        if self.sort_mode == "res_dmg":
-            return self._res_dmg(s)
-        return 0.0
+        metrics = _damage_metrics(s, self._prices)
+        return metrics.get(self.sort_mode, 0.0)
 
     def _resort(self) -> None:
         self._sorted = sorted(self._all, key=self._sort_key, reverse=True)
@@ -2620,7 +2607,7 @@ class LeaderboardView(discord.ui.View):
 
 @damage_group.command(
     name="leaderboard",
-    description="Show loot and damage dealt by each member of the configured alliance in the past week.",
+    description="Show damage/loot leaderboard for your configured alliance.",
 )
 async def damage_command(
     interaction: discord.Interaction,
@@ -3700,7 +3687,7 @@ _HELP_COMMANDS = [
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
-    ("/damage leaderboard", "Show all alliance members' loot & damage (money + resources at market price, infra destroyed) for the past 7 days. Includes members with no wars at zero."),
+    ("/damage leaderboard", "Show all alliance members' war output over the past 7 days, including members with no wars at zero."),
     ("/spy target find <alliances>", "Find nations in given alliances (comma-separated names or IDs) sorted by spy capacity (cities)."),
     ("/missile targets find", "Top 20 nations in the /slots alliances with the most cities that have open defensive slots."),
     ("/infra <current> <target> [cities] [projects]", "Calculate infrastructure purchase cost with optional project discounts."),

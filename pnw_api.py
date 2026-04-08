@@ -907,7 +907,7 @@ class PnWClient:
         wars (where *alliance_id* is the defender) are counted.  A nation that
         fought in both roles has all contributions accumulated into a single entry.
 
-        Uses the Locutus per-attack attribution model:
+        Uses a per-attack attribution model:
 
         Phase 1 – wars query: collects qualifying war IDs and records which
         nations are alliance members (attacker or defender).  No war-level
@@ -976,7 +976,7 @@ class PnWClient:
         # Phase 1: collect qualifying wars and nation membership.
         #
         # War-level damage totals are intentionally NOT used here; all damage
-        # data is derived from per-attack records in Phase 2 (Locutus model).
+        # data is derived from per-attack records in Phase 2.
         # ------------------------------------------------------------------
         page = 1
         while True:
@@ -1073,7 +1073,7 @@ class PnWClient:
             return results
 
         # ------------------------------------------------------------------
-        # Phase 2: per-attack attribution (Locutus model).
+        # Phase 2: per-attack attribution.
         #
         # For every attack initiated by an alliance member (att_id in results):
         #   • def_*_used                 → enemy resource cost (all attacks)
@@ -1139,7 +1139,6 @@ class PnWClient:
                     att_id = int(attack.get("att_id") or 0)
                     if att_id not in results:
                         continue
-
                     attack_type = str(attack.get("type") or "")
                     # VICTORY only occurs when the war attacker's resistance
                     # reaches 0, meaning the attacker always wins.  The API
@@ -1848,4 +1847,3 @@ def compute_nation_revenue(
         rev.avg_commerce = total_commerce / len(cities)
 
     return rev
-
