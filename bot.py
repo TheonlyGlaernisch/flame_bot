@@ -570,8 +570,23 @@ class FlameBot(discord.Client):
             log.warning("Guild %d has invalid welcome channel ID %s.", guild_id, channel_id)
             return
 
-        template = str(cfg["message"] or "Welcome !(user)!")
-        message = template.replace("!(user)", member.mention)
+        template = str(cfg["message"] or "Welcome !(user)! !(status)")
+        is_registered = self.db.get_by_discord_id(member.id) is not None
+        if is_registered:
+            status_text = (
+                f"hmm, we seems to have met before {member.name}, "
+                "you have already been registered. GGs and cya"
+            )
+        else:
+            status_text = (
+                "alas, you dont seem registered with me. "
+                "would you kindly run /register {nation id}?"
+            )
+        message = (
+            template.replace("!(user)", member.mention)
+            .replace("!(mention)", member.mention)
+            .replace("!(status)", status_text)
+        )
         try:
             await channel.send(message)
         except (discord.Forbidden, discord.HTTPException):
@@ -2470,10 +2485,10 @@ admin_group.add_command(admin_welcome_group)
 
 @admin_welcome_group.command(
     name="set_message",
-    description="Set the welcome message template. Use !(user) to mention the new member.",
+    description="Set the welcome message template. Use !(user), !(mention), and !(status).",
 )
 @app_commands.describe(
-    message="Welcome message template. Include !(user) where the new member mention should appear."
+    message="Welcome message template. Tokens: !(user) mention, !(mention) mention, !(status) registration status."
 )
 async def admin_welcome_set_message(interaction: discord.Interaction, message: str) -> None:
     await interaction.response.defer(ephemeral=True)
@@ -2488,8 +2503,19 @@ async def admin_welcome_set_message(interaction: discord.Interaction, message: s
         await interaction.followup.send("❌ Welcome message cannot be empty.", ephemeral=True)
         return
     bot.db.set_welcome_config(guild_id, message=message.strip())
+    preview_status = (
+        f"hmm, we seems to have met before {interaction.user.name}, "
+        "you have already been registered. GGs and cya"
+        if bot.db.get_by_discord_id(interaction.user.id)
+        else "alas, you dont seem registered with me. would you kindly run /register {nation id}?"
+    )
+    preview = (
+        message.replace("!(user)", interaction.user.mention)
+        .replace("!(mention)", interaction.user.mention)
+        .replace("!(status)", preview_status)
+    )
     await interaction.followup.send(
-        f"✅ Welcome message updated.\nPreview: {message.replace('!(user)', interaction.user.mention)}",
+        f"✅ Welcome message updated.\nPreview: {preview}",
         ephemeral=True,
     )
 
@@ -2561,7 +2587,7 @@ async def admin_welcome_show(interaction: discord.Interaction) -> None:
     embed.add_field(name="Status", value=status_text, inline=True)
     embed.add_field(name="Channel", value=channel_text, inline=True)
     embed.add_field(name="Template", value=str(cfg["message"]), inline=False)
-    embed.set_footer(text="Use !(user) to mention the joining member.")
+    embed.set_footer(text="Tokens: !(user) mention, !(mention) mention, !(status) registration status.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -4054,7 +4080,7 @@ _HELP_COMMANDS = [
     ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
-    ("/admin welcome set_message <message>", "Set the welcome template. Use !(user) for the joining member mention. *(admin/leader/2ic/ia)*"),
+    ("/admin welcome set_message <message>", "Set the welcome template. Tokens: !(user), !(mention), !(status). *(admin/leader/2ic/ia)*"),
     ("/admin welcome set_channel <channel>", "Set the channel for welcome posts. *(admin/leader/2ic/ia)*"),
     ("/admin welcome toggle <enabled>", "Enable/disable welcome messages. *(admin/leader/2ic/ia)*"),
     ("/admin welcome show", "Show current welcome-message settings. *(admin/leader/2ic/ia)*"),
