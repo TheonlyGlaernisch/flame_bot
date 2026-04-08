@@ -418,6 +418,49 @@ def _success_embed(description: str) -> discord.Embed:
     return discord.Embed(description=description, color=discord.Color.green())
 
 
+def _render_welcome_message(
+    template: str,
+    *,
+    member_mention: str,
+    member_name: str,
+    is_registered: bool,
+    welcome_channel_mention: str | None,
+    guild: discord.Guild | None = None,
+) -> str:
+    """Render a welcome-message template into final message content."""
+    if is_registered:
+        status_text = (
+            f"hmm, we seems to have met before {member_name}, "
+            "you have already been registered. GGs and cya"
+        )
+    else:
+        status_text = (
+            "alas, you dont seem registered with me. "
+            "would you kindly run /register {nation id}?"
+        )
+    rendered = (
+        template.replace("!(user)", member_mention)
+        .replace("!(mention)", member_mention)
+        .replace("!(status)", status_text)
+        .replace("!(channel)", welcome_channel_mention or "#unknown-channel")
+    )
+    if guild is None:
+        return rendered
+
+    # Discord slash command text options can serialize #channel picks as plain
+    # "#name" text, so convert those back to channel mentions when possible.
+    channels_by_name: dict[str, discord.abc.GuildChannel] = {
+        ch.name: ch for ch in guild.channels if hasattr(ch, "mention")
+    }
+
+    def _replace_hash_channel(match: re.Match[str]) -> str:
+        channel_name = match.group(1)
+        channel = channels_by_name.get(channel_name)
+        return channel.mention if channel else match.group(0)
+
+    return re.sub(r"(?<!\S)#([a-z0-9_-]{1,100})", _replace_hash_channel, rendered)
+
+
 # ---------------------------------------------------------------------------
 # Bot class
 # ---------------------------------------------------------------------------
@@ -572,20 +615,13 @@ class FlameBot(discord.Client):
 
         template = str(cfg["message"] or "Welcome !(user)! !(status)")
         is_registered = self.db.get_by_discord_id(member.id) is not None
-        if is_registered:
-            status_text = (
-                f"hmm, we seems to have met before {member.name}, "
-                "you have already been registered. GGs and cya"
-            )
-        else:
-            status_text = (
-                "alas, you dont seem registered with me. "
-                "would you kindly run /register {nation id}?"
-            )
-        message = (
-            template.replace("!(user)", member.mention)
-            .replace("!(mention)", member.mention)
-            .replace("!(status)", status_text)
+        message = _render_welcome_message(
+            template,
+            member_mention=member.mention,
+            member_name=member.name,
+            is_registered=is_registered,
+            welcome_channel_mention=channel.mention,
+            guild=member.guild,
         )
         try:
             await channel.send(message)
@@ -2485,10 +2521,10 @@ admin_group.add_command(admin_welcome_group)
 
 @admin_welcome_group.command(
     name="set_message",
-    description="Set the welcome message template. Use !(user), !(mention), and !(status).",
+    description="Set the welcome message template. Use !(user), !(mention), !(status), and !(channel).",
 )
 @app_commands.describe(
-    message="Welcome message template. Tokens: !(user) mention, !(mention) mention, !(status) registration status."
+    message="Welcome message template. Tokens: !(user) mention, !(mention) mention, !(status) registration status, !(channel) welcome channel mention."
 )
 async def admin_welcome_set_message(interaction: discord.Interaction, message: str) -> None:
     await interaction.response.defer(ephemeral=True)
@@ -2503,16 +2539,19 @@ async def admin_welcome_set_message(interaction: discord.Interaction, message: s
         await interaction.followup.send("❌ Welcome message cannot be empty.", ephemeral=True)
         return
     bot.db.set_welcome_config(guild_id, message=message.strip())
-    preview_status = (
-        f"hmm, we seems to have met before {interaction.user.name}, "
-        "you have already been registered. GGs and cya"
-        if bot.db.get_by_discord_id(interaction.user.id)
-        else "alas, you dont seem registered with me. would you kindly run /register {nation id}?"
+    cfg = bot.db.get_welcome_config(guild_id)
+    preview_channel = (
+        interaction.guild.get_channel(cfg["channel_id"])
+        if interaction.guild and cfg["channel_id"]
+        else None
     )
-    preview = (
-        message.replace("!(user)", interaction.user.mention)
-        .replace("!(mention)", interaction.user.mention)
-        .replace("!(status)", preview_status)
+    preview = _render_welcome_message(
+        message,
+        member_mention=interaction.user.mention,
+        member_name=interaction.user.name,
+        is_registered=bot.db.get_by_discord_id(interaction.user.id) is not None,
+        welcome_channel_mention=preview_channel.mention if isinstance(preview_channel, discord.TextChannel) else None,
+        guild=interaction.guild,
     )
     await interaction.followup.send(
         f"✅ Welcome message updated.\nPreview: {preview}",
@@ -2587,7 +2626,7 @@ async def admin_welcome_show(interaction: discord.Interaction) -> None:
     embed.add_field(name="Status", value=status_text, inline=True)
     embed.add_field(name="Channel", value=channel_text, inline=True)
     embed.add_field(name="Template", value=str(cfg["message"]), inline=False)
-    embed.set_footer(text="Tokens: !(user) mention, !(mention) mention, !(status) registration status.")
+    embed.set_footer(text="Tokens: !(user) mention, !(mention) mention, !(status) registration status, !(channel) welcome channel mention.")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
@@ -4080,7 +4119,7 @@ _HELP_COMMANDS = [
     ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
-    ("/admin welcome set_message <message>", "Set the welcome template. Tokens: !(user), !(mention), !(status). *(admin/leader/2ic/ia)*"),
+    ("/admin welcome set_message <message>", "Set the welcome template. Tokens: !(user), !(mention), !(status), !(channel). *(admin/leader/2ic/ia)*"),
     ("/admin welcome set_channel <channel>", "Set the channel for welcome posts. *(admin/leader/2ic/ia)*"),
     ("/admin welcome toggle <enabled>", "Enable/disable welcome messages. *(admin/leader/2ic/ia)*"),
     ("/admin welcome show", "Show current welcome-message settings. *(admin/leader/2ic/ia)*"),
