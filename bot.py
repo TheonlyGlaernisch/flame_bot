@@ -121,6 +121,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import re
 from typing import Optional
 
@@ -162,6 +163,7 @@ logging.basicConfig(
 log = logging.getLogger("flame_bot")
 
 BOT_NAME = "flame_bot"
+DISCORD_COMMAND_COOLDOWN_SECONDS = 2.0
 
 # ---------------------------------------------------------------------------
 # Role helpers
@@ -432,10 +434,28 @@ class FlameBot(discord.Client):
         self.pnw_test = PnWClient(config.PNW_TEST_API_KEY, rest_url=PNW_TEST_REST_URL)
         self._api_runner: web.AppRunner | None = None
         self._invite_refresh_task: asyncio.Task[None] | None = None
+        self._command_cooldowns: dict[int, float] = {}
 
     async def setup_hook(self) -> None:
+        self.tree.add_check(self._global_command_cooldown_check)
         await self.tree.sync()
         log.info("Slash commands synced globally.")
+
+    async def _global_command_cooldown_check(self, interaction: discord.Interaction) -> bool:
+        """Enforce a small per-user global cooldown across slash commands."""
+        now = time.monotonic()
+        user_id = interaction.user.id
+        last_used = self._command_cooldowns.get(user_id)
+        if last_used is not None:
+            elapsed = now - last_used
+            if elapsed < DISCORD_COMMAND_COOLDOWN_SECONDS:
+                retry_after = DISCORD_COMMAND_COOLDOWN_SECONDS - elapsed
+                raise app_commands.CommandOnCooldown(
+                    cooldown=app_commands.Cooldown(1, DISCORD_COMMAND_COOLDOWN_SECONDS),
+                    retry_after=retry_after,
+                )
+        self._command_cooldowns[user_id] = now
+        return True
 
     async def _create_guild_invite(self, guild: discord.Guild) -> str | None:
         """Create and return a non-expiring, unlimited-use invite URL for this guild."""
@@ -526,6 +546,27 @@ class FlameBot(discord.Client):
         if before.name != after.name:
             await self._persist_guild(after)
             log.info("Guild renamed %s -> %s (%d); name persisted.", before.name, after.name, after.id)
+
+    async def on_member_join(self, member: discord.Member) -> None:
+        guild_id = member.guild.id
+        cfg = self.db.get_welcome_config(guild_id)
+        if not cfg["enabled"]:
+            return
+
+        channel_id = cfg["channel_id"]
+        if channel_id is None:
+            return
+        channel = member.guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            log.warning("Guild %d has invalid welcome channel ID %s.", guild_id, channel_id)
+            return
+
+        template = str(cfg["message"] or "Welcome !(user)!")
+        message = template.replace("!(user)", member.mention)
+        try:
+            await channel.send(message)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception("Failed to send welcome message in guild %d channel %d.", guild_id, channel.id)
 
     async def _start_api(self) -> None:
         app = create_app(
@@ -2408,6 +2449,114 @@ async def admin_api_key_set_error(
 
 
 # ---------------------------------------------------------------------------
+# /admin welcome  (subgroup)
+# ---------------------------------------------------------------------------
+
+admin_welcome_group = app_commands.Group(
+    name="welcome",
+    description="Configure welcome messages for new members.",
+)
+admin_group.add_command(admin_welcome_group)
+
+
+@admin_welcome_group.command(
+    name="set_message",
+    description="Set the welcome message template. Use !(user) to mention the new member.",
+)
+@app_commands.describe(
+    message="Welcome message template. Include !(user) where the new member mention should appear."
+)
+async def admin_welcome_set_message(interaction: discord.Interaction, message: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if not await _check_gov_access(interaction, "ia", "leader", "2ic"):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need Administrator or a configured IA/Leader/2IC role to use this command."),
+            ephemeral=True,
+        )
+        return
+    guild_id = interaction.guild_id or 0
+    if not message.strip():
+        await interaction.followup.send("❌ Welcome message cannot be empty.", ephemeral=True)
+        return
+    bot.db.set_welcome_config(guild_id, message=message.strip())
+    await interaction.followup.send(
+        f"✅ Welcome message updated.\nPreview: {message.replace('!(user)', interaction.user.mention)}",
+        ephemeral=True,
+    )
+
+
+@admin_welcome_group.command(
+    name="set_channel",
+    description="Set the channel where welcome messages are posted.",
+)
+@app_commands.describe(channel="Text channel to post welcome messages in.")
+async def admin_welcome_set_channel(
+    interaction: discord.Interaction, channel: discord.TextChannel
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if not await _check_gov_access(interaction, "ia", "leader", "2ic"):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need Administrator or a configured IA/Leader/2IC role to use this command."),
+            ephemeral=True,
+        )
+        return
+    guild_id = interaction.guild_id or 0
+    bot.db.set_welcome_config(guild_id, channel_id=channel.id)
+    await interaction.followup.send(
+        f"✅ Welcome channel set to {channel.mention}.",
+        ephemeral=True,
+    )
+
+
+@admin_welcome_group.command(
+    name="toggle",
+    description="Enable or disable welcome messages.",
+)
+@app_commands.describe(enabled="Turn welcome messages on or off.")
+async def admin_welcome_toggle(interaction: discord.Interaction, enabled: bool) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if not await _check_gov_access(interaction, "ia", "leader", "2ic"):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need Administrator or a configured IA/Leader/2IC role to use this command."),
+            ephemeral=True,
+        )
+        return
+    guild_id = interaction.guild_id or 0
+    bot.db.set_welcome_config(guild_id, enabled=enabled)
+    state = "enabled" if enabled else "disabled"
+    await interaction.followup.send(
+        f"✅ Welcome messages are now **{state}**.",
+        ephemeral=True,
+    )
+
+
+@admin_welcome_group.command(
+    name="show",
+    description="Show the current welcome message configuration.",
+)
+async def admin_welcome_show(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if not await _check_gov_access(interaction, "ia", "leader", "2ic"):
+        await interaction.followup.send(
+            embed=_error_embed("❌ You need Administrator or a configured IA/Leader/2IC role to use this command."),
+            ephemeral=True,
+        )
+        return
+    guild = interaction.guild
+    guild_id = interaction.guild_id or 0
+    cfg = bot.db.get_welcome_config(guild_id)
+    channel = guild and cfg["channel_id"] and guild.get_channel(int(cfg["channel_id"]))
+    channel_text = channel.mention if isinstance(channel, discord.TextChannel) else "Not set"
+    status_text = "Enabled" if cfg["enabled"] else "Disabled"
+    embed = discord.Embed(title="Welcome Message Settings", color=discord.Color.blurple())
+    embed.add_field(name="Status", value=status_text, inline=True)
+    embed.add_field(name="Channel", value=channel_text, inline=True)
+    embed.add_field(name="Template", value=str(cfg["message"]), inline=False)
+    embed.set_footer(text="Use !(user) to mention the joining member.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# ---------------------------------------------------------------------------
 # /admin clear_guild_commands
 # ---------------------------------------------------------------------------
 
@@ -3896,6 +4045,10 @@ _HELP_COMMANDS = [
     ("/admin alliance set <id>", "Set the guild's primary alliance ID. *(admin)*"),
     ("/admin alliance show", "Show the guild's configured primary alliance ID."),
     ("/admin api_key set <key>", "Override the PnW API key used by this bot. *(admin)*"),
+    ("/admin welcome set_message <message>", "Set the welcome template. Use !(user) for the joining member mention. *(admin/leader/2ic/ia)*"),
+    ("/admin welcome set_channel <channel>", "Set the channel for welcome posts. *(admin/leader/2ic/ia)*"),
+    ("/admin welcome toggle <enabled>", "Enable/disable welcome messages. *(admin/leader/2ic/ia)*"),
+    ("/admin welcome show", "Show current welcome-message settings. *(admin/leader/2ic/ia)*"),
     ("/admin clear_guild_commands", "Clear guild-scoped commands to remove duplicates. *(admin)*"),
     ("/admin sync", "Copy global commands to this server for instant propagation. *(admin)*"),
     ("/color", "Check whether alliance members are on the correct color."),
@@ -3920,6 +4073,25 @@ async def help_command(interaction: discord.Interaction) -> None:
         color=discord.Color.blurple(),
     )
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    """Handle global app-command errors that are not captured per-command."""
+    if isinstance(error, app_commands.CommandOnCooldown):
+        retry_after = max(error.retry_after, 0.0)
+        embed = _error_embed(
+            f"⏳ You're sending commands too quickly. "
+            f"Please wait **{retry_after:.1f}s** and try again."
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    raise error
 
 
 # ---------------------------------------------------------------------------
