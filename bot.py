@@ -447,7 +447,6 @@ class FlameBot(discord.Client):
         self._command_cooldowns: dict[int, float] = {}
 
     async def setup_hook(self) -> None:
-        self.tree.add_check(self._global_command_cooldown_check)
         await self.tree.sync()
         log.info("Slash commands synced globally.")
 
