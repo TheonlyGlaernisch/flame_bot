@@ -129,6 +129,39 @@ class Database:
             upsert=True,
         )
 
+    # Welcome message config helpers ----------------------------------------
+
+    def get_welcome_config(self, guild_id: int) -> dict[str, object]:
+        """Return welcome-message config for a guild."""
+        doc = self._guild_config.find_one({"guild_id": str(guild_id)}, {"_id": 0}) or {}
+        return {
+            "enabled": bool(doc.get("welcome_enabled", False)),
+            "channel_id": int(doc["welcome_channel_id"]) if doc.get("welcome_channel_id") else None,
+            "message": str(doc.get("welcome_message", "Welcome !(user)!")),
+        }
+
+    def set_welcome_config(
+        self,
+        guild_id: int,
+        *,
+        enabled: bool | None = None,
+        channel_id: int | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Upsert welcome-message config fields for a guild."""
+        updates: dict[str, object] = {"guild_id": str(guild_id)}
+        if enabled is not None:
+            updates["welcome_enabled"] = enabled
+        if channel_id is not None:
+            updates["welcome_channel_id"] = channel_id
+        if message is not None:
+            updates["welcome_message"] = message
+        self._guild_config.update_one(
+            {"guild_id": str(guild_id)},
+            {"$set": updates},
+            upsert=True,
+        )
+
     # Guild listing helpers ---------------------------------------------------
 
     def upsert_guild(self, guild_id: int, guild_name: str, invite_link: str | None = None) -> None:

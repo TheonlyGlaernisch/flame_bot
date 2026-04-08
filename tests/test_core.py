@@ -115,6 +115,36 @@ class TestDatabase:
         assert db.get_slots_alliances(2) == [999]
 
     # ------------------------------------------------------------------
+    # Welcome config tests
+    # ------------------------------------------------------------------
+
+    def test_welcome_config_defaults(self):
+        db = _make_db()
+        cfg = db.get_welcome_config(1)
+        assert cfg == {
+            "enabled": False,
+            "channel_id": None,
+            "message": "Welcome !(user)!",
+        }
+
+    def test_set_and_get_welcome_config(self):
+        db = _make_db()
+        db.set_welcome_config(1, enabled=True, channel_id=123, message="Hi !(user)")
+        cfg = db.get_welcome_config(1)
+        assert cfg["enabled"] is True
+        assert cfg["channel_id"] == 123
+        assert cfg["message"] == "Hi !(user)"
+
+    def test_set_welcome_config_partial_update(self):
+        db = _make_db()
+        db.set_welcome_config(1, enabled=True, channel_id=123, message="Hi !(user)")
+        db.set_welcome_config(1, enabled=False)
+        cfg = db.get_welcome_config(1)
+        assert cfg["enabled"] is False
+        assert cfg["channel_id"] == 123
+        assert cfg["message"] == "Hi !(user)"
+
+    # ------------------------------------------------------------------
     # Guild persistence tests
     # ------------------------------------------------------------------
 
