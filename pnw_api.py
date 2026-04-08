@@ -1186,10 +1186,10 @@ class PnWClient:
                         gas = mun = alum = steel = 0.0
 
                     # money_stolen covers per-city ground loot; money_looted covers
-                    # VICTORY loot (which may not populate money_stolen).
-                    # Fall back to loot_info text parsing when neither field is set.
-                    money = float(
-                        attack.get("money_stolen") or attack.get("money_looted") or 0
+                    # VICTORY loot. Some payloads may include one or both fields.
+                    # Sum both when present, then fall back to loot_info parsing.
+                    money = float(attack.get("money_stolen") or 0) + float(
+                        attack.get("money_looted") or 0
                     )
                     if not money:
                         loot_str = attack.get("loot_info") or ""
