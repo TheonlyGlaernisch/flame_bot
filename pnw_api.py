@@ -917,6 +917,8 @@ class PnWClient:
         """
         results: dict[int, dict[str, Any]] = {}
         war_ids: list[int] = []
+        war_def_alum: dict[int, float] = {}
+        war_def_steel: dict[int, float] = {}
 
         def _make_entry(nation_name: str, num_cities: int) -> dict[str, Any]:
             return {
@@ -961,6 +963,8 @@ class PnWClient:
                         att_alliance_id
                         def_alliance_id
                         date
+                        def_alum_used
+                        def_steel_used
                         attacker {
                             nation_name
                             num_cities
@@ -1002,6 +1006,9 @@ class PnWClient:
                 war_id = int(war.get("id") or 0)
                 att_alliance = int(war.get("att_alliance_id") or 0)
                 def_alliance = int(war.get("def_alliance_id") or 0)
+                if war_id:
+                    war_def_alum[war_id] = float(war.get("def_alum_used") or 0)
+                    war_def_steel[war_id] = float(war.get("def_steel_used") or 0)
 
                 # ---- Offensive contribution (our member is the attacker) ----
                 if att_alliance == alliance_id:
@@ -1062,6 +1069,12 @@ class PnWClient:
         _VICTORY = "VICTORY"
         _LOOT_TYPES = _ATTACK_TYPES_WITH_LOOT  # {"GROUND", "VICTORY"}
         _BATCH = _WARATTACKS_BATCH_SIZE
+        # Used to apportion war-level defender aluminum/steel usage to the
+        # alliance member(s) that initiated in-window attacks in that war.
+        war_member_usage: dict[tuple[int, int], float] = {}
+        war_total_usage: dict[int, float] = {}
+        war_member_attacks: dict[tuple[int, int], int] = {}
+        war_total_attacks: dict[int, int] = {}
         for batch_start in range(0, len(war_ids), _BATCH):
             batch = war_ids[batch_start : batch_start + _BATCH]
             atk_page = 1
@@ -1070,6 +1083,7 @@ class PnWClient:
                 query GetWarAttacks($war_id: [Int], $page: Int) {
                     warattacks(war_id: $war_id, page: $page, first: 100) {
                         data {
+                            war_id
                             att_id
                             date
                             type
@@ -1108,6 +1122,7 @@ class PnWClient:
                 )
 
                 for attack in attacks:
+                    war_id = int(attack.get("war_id") or 0)
                     att_id = int(attack.get("att_id") or 0)
                     if att_id not in results:
                         continue
@@ -1132,9 +1147,18 @@ class PnWClient:
                     # Enemy resource consumption defending against this attack
                     # (counted regardless of outcome — defender uses resources either way).
                     # Note: def_alum_used and def_steel_used are only available at the
-                    # war level, not per-attack, so they are not tracked here.
-                    results[att_id]["def_gas_used"] += float(attack.get("def_gas_used") or 0)
-                    results[att_id]["def_mun_used"] += float(attack.get("def_mun_used") or 0)
+                    # war level, so we apportion those per war after this loop.
+                    def_gas = float(attack.get("def_gas_used") or 0)
+                    def_mun = float(attack.get("def_mun_used") or 0)
+                    results[att_id]["def_gas_used"] += def_gas
+                    results[att_id]["def_mun_used"] += def_mun
+                    if war_id:
+                        usage = max(0.0, def_gas + def_mun)
+                        k = (war_id, att_id)
+                        war_member_usage[k] = war_member_usage.get(k, 0.0) + usage
+                        war_total_usage[war_id] = war_total_usage.get(war_id, 0.0) + usage
+                        war_member_attacks[k] = war_member_attacks.get(k, 0) + 1
+                        war_total_attacks[war_id] = war_total_attacks.get(war_id, 0) + 1
 
                     # Enemy units destroyed in this exchange, derived from the
                     # generic defcas1/defcas2 fields (pnwkit model).
@@ -1208,6 +1232,28 @@ class PnWClient:
                 if not atk_has_more:
                     break
                 atk_page += 1
+
+        # Apportion war-level defender aluminum/steel usage to member
+        # initiators in that war using in-window activity weights.
+        for war_id in war_ids:
+            alum = war_def_alum.get(war_id, 0.0)
+            steel = war_def_steel.get(war_id, 0.0)
+            if not (alum or steel):
+                continue
+            total_usage = war_total_usage.get(war_id, 0.0)
+            total_attacks = war_total_attacks.get(war_id, 0)
+            for (wid, nation_id), attack_count in war_member_attacks.items():
+                if wid != war_id:
+                    continue
+                key = (wid, nation_id)
+                if total_usage > 0:
+                    weight = war_member_usage.get(key, 0.0) / total_usage
+                elif total_attacks > 0:
+                    weight = attack_count / total_attacks
+                else:
+                    continue
+                results[nation_id]["def_alum_used"] += alum * weight
+                results[nation_id]["def_steel_used"] += steel * weight
 
         return results
 
