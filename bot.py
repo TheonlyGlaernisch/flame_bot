@@ -25,7 +25,16 @@ Commands
     Returns an embed with score, member count, avg cities, and more.
 
 /alliance members <query>
-    List members of a Politics and War alliance (10 per page, ◀/▶ to page).
+    List members of a Politics and War alliance by ID, name, or @mention
+    (10 per page, ◀/▶ to page).
+
+/alliance_lots_of_info <query>
+    Multi-page alliance briefing:
+    • Page 1: alliance info
+    • Page 2: city tier graph
+    • Page 3: score-development note
+    • Remaining pages: members with score, beige status, city count,
+      avg infra estimate, and alliance age.
 
 /test whois <query>
     Same as /whois but queries the PnW test API.
@@ -932,6 +941,58 @@ async def _handle_alliance_find(
     await interaction.followup.send(embed=_alliance_embed(info, base_url=base_url))
 
 
+async def _resolve_mentioned_nation_via_api(
+    interaction: discord.Interaction,
+    pnw: PnWClient,
+    discord_id: int,
+) -> Nation | None:
+    """Resolve a mentioned Discord user to a nation via PnW Discord tag matching."""
+    member = interaction.guild and interaction.guild.get_member(discord_id)
+    if member is None and interaction.guild is not None:
+        try:
+            member = await interaction.guild.fetch_member(discord_id)
+        except discord.HTTPException:
+            member = None
+    if member is None:
+        return None
+
+    candidate_tags = [
+        member.name,
+        member.display_name,
+        member.global_name or "",
+    ]
+    if member.discriminator and member.discriminator != "0":
+        candidate_tags.append(f"{member.name}#{member.discriminator}")
+
+    for tag in candidate_tags:
+        candidate = tag.strip()
+        if not candidate:
+            continue
+        nation = await pnw.get_nation_by_discord_tag(candidate)
+        if nation is not None and pnw.discord_matches(nation.discord_tag, candidate):
+            return nation
+    return None
+
+
+async def _resolve_alliance_query(
+    interaction: discord.Interaction,
+    pnw: PnWClient,
+    query: str,
+) -> AllianceInfo | None:
+    """Resolve alliance query by mention, numeric ID, or alliance name."""
+    query = query.strip()
+    mention_match = _MENTION_RE.match(query)
+    if mention_match:
+        discord_id = int(mention_match.group(1))
+        nation = await _resolve_mentioned_nation_via_api(interaction, pnw, discord_id)
+        if nation is None or nation.alliance_id <= 0:
+            return None
+        return await pnw.get_alliance_by_id(nation.alliance_id)
+    if query.isdigit():
+        return await pnw.get_alliance_by_id(int(query))
+    return await pnw.get_alliance_by_name(query)
+
+
 async def _handle_alliance_members(
     interaction: discord.Interaction, pnw: PnWClient, query: str,
     base_url: str = _PNW_BASE_URL,
@@ -939,10 +1000,7 @@ async def _handle_alliance_members(
     """Shared logic for /alliance members and /test alliance members."""
     query = query.strip()
     try:
-        if query.isdigit():
-            info = await pnw.get_alliance_by_id(int(query))
-        else:
-            info = await pnw.get_alliance_by_name(query)
+        info = await _resolve_alliance_query(interaction, pnw, query)
     except Exception as exc:
         log.exception("PnW API error while fetching alliance '%s'", query)
         await interaction.followup.send(
@@ -969,6 +1027,104 @@ async def _handle_alliance_members(
     embed = _build_alliance_members_page(members, info, 0, base_url)
     view = AllianceMembersView(members, info, base_url=base_url)
     await interaction.followup.send(embed=embed, view=view)
+
+
+def _build_city_tier_graph_embed(
+    alliance: AllianceInfo,
+    members: list[Nation],
+    base_url: str = _PNW_BASE_URL,
+) -> discord.Embed:
+    counts: dict[int, int] = {}
+    for m in members:
+        counts[m.num_cities] = counts.get(m.num_cities, 0) + 1
+    if not counts:
+        desc = "*(no member data)*"
+    else:
+        max_count = max(counts.values())
+        rows: list[str] = []
+        for city in sorted(counts):
+            c = counts[city]
+            bar_len = max(1, int((c / max_count) * 18))
+            rows.append(f"`{city:>2}c` {'█' * bar_len} {c}")
+        desc = "\n".join(rows)
+    embed = discord.Embed(
+        title=f"{alliance.name} — City Tier Graph",
+        url=_alliance_url(alliance.alliance_id, base_url),
+        description=desc,
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Member count by city tier")
+    return embed
+
+
+def _build_alliance_extended_members_pages(
+    alliance: AllianceInfo,
+    members: list[Nation],
+    base_url: str = _PNW_BASE_URL,
+    page_size: int = 10,
+) -> list[discord.Embed]:
+    pages: list[discord.Embed] = []
+    members_sorted = sorted(members, key=lambda n: n.score, reverse=True)
+    total = len(members_sorted)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    for page in range(total_pages):
+        start = page * page_size
+        page_members = members_sorted[start : start + page_size]
+        lines: list[str] = []
+        for i, n in enumerate(page_members, start=start + 1):
+            beige = "🟨" if n.beige_turns > 0 else "✅"
+            avg_infra = _estimate_avg_infra(n)
+            age_days = max(0, int(n.alliance_seniority))
+            lines.append(
+                f"`{i:>3}.` [{n.nation_name}]({_nation_url(n.nation_id, base_url)})"
+                f" — ⭐ {n.score:,.0f} | 🏙️ {n.num_cities} | {beige}"
+                f" | 🏗️ {avg_infra:,.0f} avg | ⏳ {age_days}d"
+            )
+        embed = discord.Embed(
+            title=f"{alliance.name} — Members (Extended)",
+            url=_alliance_url(alliance.alliance_id, base_url),
+            description="\n".join(lines) if lines else "*(no members)*",
+            color=discord.Color.gold(),
+        )
+        embed.set_footer(text=f"Members page {page + 1}/{total_pages} · {total} total")
+        pages.append(embed)
+    return pages
+
+
+class AllianceLotsOfInfoView(discord.ui.View):
+    """Pagination for /alliance_lots_of_info pages."""
+
+    def __init__(self, pages: list[discord.Embed], page: int = 0) -> None:
+        super().__init__(timeout=600)
+        self.pages = pages
+        self.page = page
+        self._refresh_buttons()
+
+    @property
+    def _total_pages(self) -> int:
+        return max(1, len(self.pages))
+
+    def _refresh_buttons(self) -> None:
+        self.prev_button.disabled = self.page <= 0
+        self.next_button.disabled = self.page >= self._total_pages - 1
+
+    async def _update(self, interaction: discord.Interaction) -> None:
+        self._refresh_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.page], view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = max(0, self.page - 1)
+        await self._update(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.page = min(self._total_pages - 1, self.page + 1)
+        await self._update(interaction)
 
 
 def _build_alliance_members_page(
@@ -1082,10 +1238,61 @@ async def alliance_find(interaction: discord.Interaction, query: str) -> None:
     name="members",
     description="List members of a Politics and War alliance (10 per page).",
 )
-@app_commands.describe(query="Alliance ID (numeric) or alliance name.")
+@app_commands.describe(query="Alliance ID, alliance name, or a @mention.")
 async def alliance_members(interaction: discord.Interaction, query: str) -> None:
     await interaction.response.defer()
     await _handle_alliance_members(interaction, bot.pnw, query)
+
+
+@bot.tree.command(
+    name="alliance_lots_of_info",
+    description="Multi-page alliance briefing: info, city tiers, score-dev, and members.",
+)
+@app_commands.describe(query="Alliance ID, alliance name, or a @mention.")
+async def alliance_lots_of_info(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer()
+    q = query.strip()
+    try:
+        info = await _resolve_alliance_query(interaction, bot.pnw, q)
+        if info is None:
+            await interaction.followup.send(embed=_info_embed(f"ℹ️ No alliance found for `{q}`."))
+            return
+        members = await bot.pnw.get_alliance_members([info.alliance_id])
+    except Exception as exc:
+        log.exception("PnW API error while building /alliance_lots_of_info for '%s'", q)
+        await interaction.followup.send(
+            embed=_error_embed(f"❌ Could not reach the Politics and War API: {exc}")
+        )
+        return
+
+    pages: list[discord.Embed] = []
+    info_embed = _alliance_embed(info)
+    info_embed.set_footer(text="Page 1 · Alliance info")
+    pages.append(info_embed)
+
+    city_embed = _build_city_tier_graph_embed(info, members)
+    city_embed.set_footer(text="Page 2 · City tier graph")
+    pages.append(city_embed)
+
+    score_dev = discord.Embed(
+        title=f"{info.name} — Score Development",
+        url=_alliance_url(info.alliance_id),
+        description=(
+            "Historical alliance-score development is not available from the "
+            "current PnW endpoints used by this bot."
+        ),
+        color=discord.Color.dark_teal(),
+    )
+    score_dev.set_footer(text="Page 3")
+    pages.append(score_dev)
+
+    member_pages = _build_alliance_extended_members_pages(info, members)
+    for i, embed in enumerate(member_pages, start=4):
+        embed.set_footer(text=f"Page {i} · {embed.footer.text}")
+        pages.append(embed)
+
+    view = AllianceLotsOfInfoView(pages)
+    await interaction.followup.send(embed=pages[0], view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -3674,7 +3881,8 @@ _HELP_COMMANDS = [
     ("/revenue [query]", "Show estimated gross daily revenue for a nation; defaults to your registered nation."),
     ("/city cost <current> [target] [options]", "Calculate city purchase cost(s) using the live dynamic formula."),
     ("/alliance info <query>", "Look up an alliance by ID, name, or @mention."),
-    ("/alliance members <query>", "List members of an alliance (10 per page)."),
+    ("/alliance members <query>", "List members of an alliance by ID, name, or @mention (10 per page)."),
+    ("/alliance_lots_of_info <query>", "Multi-page alliance briefing: info, city tiers, score-dev note, and extended member pages."),
     ("/test whois <query>", "Look up a nation via the PnW test API."),
     ("/test alliance info <query>", "Look up an alliance via the PnW test API by ID, name, or @mention."),
     ("/gov", "Show members who hold a configured government role."),

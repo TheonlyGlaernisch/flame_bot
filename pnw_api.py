@@ -692,17 +692,29 @@ class PnWClient:
     async def get_alliance_members(self, alliance_ids: list[int]) -> list[Nation]:
         """Fetch all non-vacation-mode members of the given alliances."""
         query = f"""
-        query GetAllianceMembers($alliance_id: [Int]) {{
-            nations(alliance_id: $alliance_id, vmode: false, first: 500) {{
+        query GetAllianceMembers($alliance_id: [Int], $page: Int) {{
+            nations(alliance_id: $alliance_id, vmode: false, first: 500, page: $page) {{
                 data {{
                     {_NATION_FIELDS}
+                }}
+                paginatorInfo {{
+                    hasMorePages
                 }}
             }}
         }}
         """
-        data = await self._query(query, {"alliance_id": alliance_ids})
-        nations = data.get("data", {}).get("nations", {}).get("data", [])
-        return [self._parse_nation(n) for n in nations]
+        parsed: list[Nation] = []
+        page = 1
+        while True:
+            data = await self._query(query, {"alliance_id": alliance_ids, "page": page})
+            payload = data.get("data", {}).get("nations", {})
+            nations = payload.get("data", [])
+            parsed.extend(self._parse_nation(n) for n in nations)
+            has_more = payload.get("paginatorInfo", {}).get("hasMorePages", False)
+            if not has_more:
+                break
+            page += 1
+        return parsed
 
     async def get_nation_with_cities(
         self, nation_id: int
