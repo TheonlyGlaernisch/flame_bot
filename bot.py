@@ -975,42 +975,14 @@ async def _handle_alliance_find(
     query = query.strip()
     mention_match = _MENTION_RE.match(query)
 
-    async def _get_mentioned_nation_via_api(discord_id: int) -> Nation | None:
-        """Resolve a mentioned member to a nation using the PnW API only."""
-        member = interaction.guild and interaction.guild.get_member(discord_id)
-        if member is None and interaction.guild is not None:
-            try:
-                member = await interaction.guild.fetch_member(discord_id)
-            except discord.HTTPException:
-                member = None
-        if member is None:
-            return None
-
-        candidate_tags = [
-            member.name,
-            member.display_name,
-            member.global_name or "",
-        ]
-        if member.discriminator and member.discriminator != "0":
-            candidate_tags.append(f"{member.name}#{member.discriminator}")
-
-        for tag in candidate_tags:
-            candidate = tag.strip()
-            if not candidate:
-                continue
-            nation = await pnw.get_nation_by_discord_tag(candidate)
-            if nation is not None and pnw.discord_matches(nation.discord_tag, candidate):
-                return nation
-        return None
-
     try:
         if mention_match:
             discord_id = int(mention_match.group(1))
-            nation = await _get_mentioned_nation_via_api(discord_id)
+            nation = await _resolve_mentioned_nation_for_alliance(interaction, pnw, discord_id)
             if nation is None:
                 await interaction.followup.send(
                     embed=_info_embed(
-                        f"ℹ️ Could not resolve <@{discord_id}> via the PnW Discord field."
+                        f"ℹ️ Could not resolve <@{discord_id}> via registration or the PnW Discord field."
                     )
                 )
                 return
@@ -1075,6 +1047,30 @@ async def _resolve_mentioned_nation_via_api(
     return None
 
 
+async def _resolve_mentioned_nation_for_alliance(
+    interaction: discord.Interaction,
+    pnw: PnWClient,
+    discord_id: int,
+) -> Nation | None:
+    """Resolve a mentioned Discord user to a nation for alliance commands.
+
+    Priority:
+    1) Local /register mapping (most reliable for this bot's users).
+    2) PnW Discord tag lookup fallback.
+    """
+    row = bot.db.get_by_discord_id(discord_id)
+    if row is not None:
+        try:
+            nation = await pnw.get_nation(int(row["nation_id"]))
+            if nation is not None:
+                return nation
+        except Exception:
+            # Fall back to Discord-tag matching below.
+            pass
+
+    return await _resolve_mentioned_nation_via_api(interaction, pnw, discord_id)
+
+
 async def _resolve_alliance_query(
     interaction: discord.Interaction,
     pnw: PnWClient,
@@ -1085,7 +1081,7 @@ async def _resolve_alliance_query(
     mention_match = _MENTION_RE.match(query)
     if mention_match:
         discord_id = int(mention_match.group(1))
-        nation = await _resolve_mentioned_nation_via_api(interaction, pnw, discord_id)
+        nation = await _resolve_mentioned_nation_for_alliance(interaction, pnw, discord_id)
         if nation is None or nation.alliance_id <= 0:
             return None
         return await pnw.get_alliance_by_id(nation.alliance_id)
