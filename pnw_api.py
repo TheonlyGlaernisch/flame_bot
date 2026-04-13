@@ -316,15 +316,14 @@ _NATION_FIELDS = """
     advanced_pirate_economy
     bureau_of_domestic_affairs
     fallout_shelter
-    intelligence_agency
+    central_intelligence_agency
     guiding_satellite
     military_doctrine
     military_salvage
     moon_landing
     mars_landing
-    RESEARCH_AND_DEVELOPMENT_CENTER
+    research_and_development_center
     spy_satellite
-    triassic_park
     alliance_id
     alliance_position
     alliance_seniority
@@ -400,14 +399,13 @@ _PROJECT_ABBREVS: dict[str, str] = {
     "bureau_of_domestic_affairs": "BDA",
     "fallout_shelter": "FOS",
     "guiding_satellite": "GS",
-    "intelligence_agency": "IA",
+    "central_intelligence_agency": "IA",
     "military_doctrine": "MD",
     "military_salvage": "MS",
     "mars_landing": "MAL",
     "moon_landing": "MOL",
-    "RESEARCH_AND_DEVELOPMENT_CENTER": "RDC",
+    "research_and_development_center": "RDC",
     "spy_satellite": "SS",
-    "triassic_park": "TP",
     
     
     
