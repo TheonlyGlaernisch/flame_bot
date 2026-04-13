@@ -312,6 +312,19 @@ _NATION_FIELDS = """
     nuclear_launch_facility
     activity_center
     military_research_center
+    center_for_civil_engineering
+    advanced_pirate_economy
+    bureau_of_domestic_affairs
+    fallout_shelter
+    intelligence_agency
+    guiding_satellite
+    military_doctrine
+    military_salvage
+    moon_landing
+    mars_landing
+    RESEARCH_AND_DEVELOPMENT_CENTER
+    spy_satellite
+    triassic_park
     alliance_id
     alliance_position
     alliance_seniority
@@ -382,6 +395,28 @@ _PROJECT_ABBREVS: dict[str, str] = {
     "nuclear_launch_facility": "NLF",
     "activity_center": "AC",
     "military_research_center": "MRC",
+    "center_for_civil_engineering": "CCV",
+    "advanced_pirate_economy": "APE",
+    "bureau_of_domestic_affairs": "BDA",
+    "fallout_shelter": "FOS",
+    "guiding_satellite": "GS",
+    "intelligence_agency": "IA",
+    "military_doctrine": "MD",
+    "military_salvage": "MS",
+    "mars_landing": "MAL",
+    "moon_landing": "MOL",
+    "RESEARCH_AND_DEVELOPMENT_CENTER": "RDC",
+    "spy_satellite": "SS",
+    "triassic_park": "TP",
+    
+    
+    
+    
+    
+    
+    
+    
+    
 }
 
 _ALLIANCE_MEMBER_FIELDS = """
