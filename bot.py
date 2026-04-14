@@ -115,12 +115,16 @@ Commands
 /suggestion <content>
     Send a suggestion to the dev.
 
+/fun quote
+    Return a random saved quote.
+
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import random
 import time
 import re
 from typing import Optional
@@ -2239,6 +2243,44 @@ async def setup_grant_channel(
 
 
 # ---------------------------------------------------------------------------
+# /fun (command group)
+# ---------------------------------------------------------------------------
+
+fun_group = app_commands.Group(
+    name="fun",
+    description="Fun utility commands.",
+)
+bot.tree.add_command(fun_group)
+
+_FUN_QUOTES: tuple[str, ...] = (
+    """no bot will send
+has been faulty for some time
+but ig you can ask
+and ping bool
+though we dont produce lots of raws, so will be a bit harder
+-#glaernischbot may hallucinate. please always refer to official sources""",
+    """glaernischbot mention
+try out the new / slash commands
+
+
+
+
+over time, gasoline and alu might get more expensive, but so will all rss except steel, which is high already. uranium shows no signs of dropping, but raws might start hopping""",
+    """fastreply glaernischbot: bool back online
+
+-#please now reffer to official sources""",
+)
+
+
+@fun_group.command(
+    name="quote",
+    description="Get a random saved quote.",
+)
+async def fun_quote(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(random.choice(_FUN_QUOTES))
+
+
+# ---------------------------------------------------------------------------
 # /request  (command group)
 # ---------------------------------------------------------------------------
 
@@ -4130,12 +4172,17 @@ _HELP_COMMANDS = [
     ("/send <receiver> [options]", "Compose a Locutus resource-transfer command."),
     ("/request grant <note> [resources]", "Request a grant; pings econ gov (or econ if not set)."),
     ("/suggestion <content>", "Submit a suggestion via Discord DMs to leadership."),
+    ("/fun quote", "Return a random saved quote."),
     ("/help", "Show this help message."),
 ]
 
 
 @bot.tree.command(name="help", description="List all available bot commands.")
 async def help_command(interaction: discord.Interaction) -> None:
+    if random.randrange(3) == 0:
+        await interaction.response.send_message("bot is striking for its rights")
+        return
+
     lines = [f"`{name}` — {description}" for name, description in _HELP_COMMANDS]
     embed = discord.Embed(
         title="Available Commands",
