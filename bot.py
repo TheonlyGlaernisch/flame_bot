@@ -2258,7 +2258,7 @@ has been faulty for some time
 but ig you can ask
 and ping bool
 though we dont produce lots of raws, so will be a bit harder
--#glaernischbot may hallucinate. please always refer to official sources""",
+-# glaernischbot may hallucinate. please always refer to official sources""",
     """glaernischbot mention
 try out the new / slash commands
 
@@ -2268,7 +2268,7 @@ try out the new / slash commands
 over time, gasoline and alu might get more expensive, but so will all rss except steel, which is high already. uranium shows no signs of dropping, but raws might start hopping""",
     """fastreply glaernischbot: bool back online
 
--#please now reffer to official sources""",
+-# please now reffer to official sources""",
 )
 
 
