@@ -115,6 +115,8 @@ class Nation:
     color: str = ""
     offensive_wars: int = 0
     defensive_wars: int = 0
+    wars_won: int = 0
+    wars_lost: int = 0
 
     # Turns remaining on beige (0 = not beiged); populated by GraphQL path
     beige_turns: int = 0
@@ -280,6 +282,8 @@ _NATION_FIELDS = """
     ships
     missiles
     nukes
+    wars_won
+    wars_lost
     spies
     iron_works
     bauxite_works
@@ -524,6 +528,8 @@ class PnWClient:
             ships=int(n.get("ships") or 0),
             missiles=int(n.get("missiles") or 0),
             nukes=int(n.get("nukes") or 0),
+            wars_won=int(n.get("wars_won") or 0),
+            wars_lost=int(n.get("wars_lost") or 0),
             spies=-1 if n.get("spies") is None else int(n["spies"]),
             projects_built=projects_built,
             alliance_id=int(n.get("alliance_id") or 0),
@@ -623,8 +629,10 @@ class PnWClient:
             continent=n.get("continent", "") or "",
             war_policy=n.get("war_policy", "") or "",
             color=n.get("color", "") or "",
-            offensivewars=int(n.get("offensivewars") or 0),
-            defensivewars=int(n.get("defensivewars") or 0),
+            offensive_wars=int(n.get("offensivewars") or 0),
+            defensive_wars=int(n.get("defensivewars") or 0),
+            wars_won=int(n.get("warson") or 0),
+            wars_lost=int(n.get("warslost") or 0),
         )
 
     async def _fetch_nations_rest(self) -> list[dict[str, Any]]:

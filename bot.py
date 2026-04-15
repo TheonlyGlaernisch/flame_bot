@@ -308,6 +308,11 @@ def _nation_embed(
             value=f"⚔️ {nation.offensive_wars} off / 🛡️ {nation.defensive_wars} def",
             inline=True,
         )
+    embed.add_field(
+        name="War Record",
+        value=f"🏆 {nation.wars_won:,} won / 💀 {nation.wars_lost:,} lost",
+        inline=True,
+    )
 
     # Projects: count + short abbreviations of built projects
     if nation.projects_built:
@@ -1368,6 +1373,15 @@ async def alliance_lots_of_info(interaction: discord.Interaction, query: str) ->
 
     pages: list[discord.Embed] = []
     info_embed = _alliance_embed(info)
+    total_cities = sum(n.num_cities for n in members)
+    if total_cities > 0:
+        avg_militarization = (
+            f"🪖 Soldiers: {sum(n.soldiers for n in members) / (total_cities * MAX_SOLDIERS_PER_CITY) * 100:.1f}%\n"
+            f"⚔️ Tanks: {sum(n.tanks for n in members) / (total_cities * MAX_TANKS_PER_CITY) * 100:.1f}%\n"
+            f"✈️ Aircraft: {sum(n.aircraft for n in members) / (total_cities * MAX_AIRCRAFT_PER_CITY) * 100:.1f}%\n"
+            f"🚢 Ships: {sum(n.ships for n in members) / (total_cities * MAX_SHIPS_PER_CITY) * 100:.1f}%"
+        )
+        info_embed.add_field(name="Avg Militarization", value=avg_militarization, inline=False)
     info_embed.set_footer(text="Page 1 · Alliance info")
     pages.append(info_embed)
 
