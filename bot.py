@@ -2268,10 +2268,8 @@ bot.tree.add_command(fun_group)
 
 _FUN_QUOTES: tuple[str, ...] = (
     """no bot will send
-has been faulty for some time
-but ig you can ask
-and ping bool
-though we dont produce lots of raws, so will be a bit harder
+locutus has been faulty for some time
+
 -# glaernischbot may hallucinate. please always refer to official sources""",
     """glaernischbot mention
 try out the new / slash commands
@@ -2286,7 +2284,8 @@ over time, gasoline and alu might get more expensive, but so will all rss except
     """nobody is real. everything is probably fake, becuz of your f****** senses""",
     """to confuse the enemy, you must first confuse yourself
     -sun zoo
--# -sirius"""
+-# -sirius""",
+    """we wish you a merry christmas, and a happy ~~new year~~ lump of coal""",
 )
 
 
