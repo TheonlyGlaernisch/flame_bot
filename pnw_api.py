@@ -268,6 +268,17 @@ class NationRevenue:
         return self.food_production - self.food_consumption
 
 
+@dataclass
+class NationWar:
+    """Lightweight active-war representation for a nation."""
+
+    war_id: int
+    attacker_id: int
+    defender_id: int
+    attacker_name: str
+    defender_name: str
+
+
 _NATION_FIELDS = """
     id
     nation_name
@@ -1367,6 +1378,61 @@ class PnWClient:
             if def_id:
                 counts[def_id] = counts.get(def_id, 0) + 1
         return counts
+
+    async def get_active_wars_for_nation(self, nation_id: int) -> list[NationWar]:
+        """Return active wars involving *nation_id* as attacker or defender."""
+        if nation_id <= 0:
+            return []
+
+        query = """
+        query GetActiveWarsByNation($attid: [Int], $defid: [Int]) {
+            attacking: wars(attid: $attid, active: true, first: 100) {
+                data {
+                    id
+                    att_id
+                    def_id
+                    attacker {
+                        nation_name
+                    }
+                    defender {
+                        nation_name
+                    }
+                }
+            }
+            defending: wars(defid: $defid, active: true, first: 100) {
+                data {
+                    id
+                    att_id
+                    def_id
+                    attacker {
+                        nation_name
+                    }
+                    defender {
+                        nation_name
+                    }
+                }
+            }
+        }
+        """
+        data = await self._query(query, {"attid": [nation_id], "defid": [nation_id]})
+        att_wars = data.get("data", {}).get("attacking", {}).get("data", [])
+        def_wars = data.get("data", {}).get("defending", {}).get("data", [])
+
+        dedup: dict[int, NationWar] = {}
+        for war in [*att_wars, *def_wars]:
+            war_id = int(war.get("id") or 0)
+            if not war_id or war_id in dedup:
+                continue
+            attacker = war.get("attacker") or {}
+            defender = war.get("defender") or {}
+            dedup[war_id] = NationWar(
+                war_id=war_id,
+                attacker_id=int(war.get("att_id") or 0),
+                defender_id=int(war.get("def_id") or 0),
+                attacker_name=attacker.get("nation_name") or str(war.get("att_id") or "?"),
+                defender_name=defender.get("nation_name") or str(war.get("def_id") or "?"),
+            )
+        return list(dedup.values())
 
     async def get_nations_in_alliance_by_score_range(
         self,
