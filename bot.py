@@ -831,11 +831,14 @@ class WhoisView(discord.ui.View):
     async def show_wars(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        # Acknowledge immediately to avoid "Unknown interaction" if the API call
+        # takes longer than Discord's interaction response window.
+        await interaction.response.defer(ephemeral=True, thinking=False)
         try:
             wars = await self._pnw.get_active_wars_for_nation(self._nation.nation_id)
         except Exception as exc:
             log.exception("PnW API error while fetching active wars for nation %d", self._nation.nation_id)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=_error_embed(f"❌ Could not fetch wars right now: {exc}"),
                 ephemeral=True,
             )
@@ -843,7 +846,7 @@ class WhoisView(discord.ui.View):
 
         wars.sort(key=lambda w: w.war_id, reverse=True)
         embed = _build_active_wars_embed(self._nation, wars, self._base_url)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def _handle_whois(
