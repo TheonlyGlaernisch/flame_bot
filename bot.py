@@ -2286,7 +2286,7 @@ over time, gasoline and alu might get more expensive, but so will all rss except
     """nobody is real. everything is probably fake, becuz of your f****** senses""",
     """to confuse the enemy, you must first confuse yourself
     -sun zoo
-    -# -sirius"""
+-# -sirius"""
 )
 
 
