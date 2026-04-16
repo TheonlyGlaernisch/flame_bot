@@ -255,6 +255,10 @@ def _alliance_url(alliance_id: int, base_url: str = _PNW_BASE_URL) -> str:
     return f"{base_url}/alliance/id={alliance_id}"
 
 
+def _war_url(war_id: int, base_url: str = _PNW_BASE_URL) -> str:
+    return f"{base_url}/nation/war/timeline/war={war_id}"
+
+
 def _nation_embed(
     nation: Nation,
     registered_discord: str | None = None,
@@ -780,6 +784,68 @@ async def register(interaction: discord.Interaction, nation_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _build_active_wars_embed(
+    nation: Nation,
+    wars: list[pnw_api.NationWar],
+    base_url: str = _PNW_BASE_URL,
+) -> discord.Embed:
+    lines: list[str] = []
+    for i, war in enumerate(wars, start=1):
+        if war.attacker_id == nation.nation_id:
+            opponent_id = war.defender_id
+            opponent_name = war.defender_name
+            side = "Attacking"
+        else:
+            opponent_id = war.attacker_id
+            opponent_name = war.attacker_name
+            side = "Defending"
+        lines.append(
+            f"`{i:>2}.` [{opponent_name}]({_nation_url(opponent_id, base_url)})"
+            f" — {side} · [War #{war.war_id}]({_war_url(war.war_id, base_url)})"
+        )
+
+    embed = discord.Embed(
+        title=f"⚔️ Active Wars — {nation.nation_name}",
+        description="\n".join(lines) if lines else "*(no active wars)*",
+        color=discord.Color.orange(),
+    )
+    embed.set_footer(text=f"{len(wars)} active war(s)")
+    return embed
+
+
+class WhoisView(discord.ui.View):
+    """Action buttons attached to /whois responses."""
+
+    def __init__(
+        self,
+        nation: Nation,
+        pnw: PnWClient,
+        base_url: str = _PNW_BASE_URL,
+    ) -> None:
+        super().__init__(timeout=600)
+        self._nation = nation
+        self._pnw = pnw
+        self._base_url = base_url
+
+    @discord.ui.button(label="Show Wars", style=discord.ButtonStyle.secondary, emoji="⚔️")
+    async def show_wars(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        try:
+            wars = await self._pnw.get_active_wars_for_nation(self._nation.nation_id)
+        except Exception as exc:
+            log.exception("PnW API error while fetching active wars for nation %d", self._nation.nation_id)
+            await interaction.response.send_message(
+                embed=_error_embed(f"❌ Could not fetch wars right now: {exc}"),
+                ephemeral=True,
+            )
+            return
+
+        wars.sort(key=lambda w: w.war_id, reverse=True)
+        embed = _build_active_wars_embed(self._nation, wars, self._base_url)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def _handle_whois(
     interaction: discord.Interaction, pnw: PnWClient, query: str,
     base_url: str = _PNW_BASE_URL,
@@ -831,7 +897,10 @@ async def _handle_whois(
                     note="ℹ️ Found via PnW discord field (not locally registered).",
                     base_url=base_url,
                 )
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(
+                    embed=embed,
+                    view=WhoisView(nation, pnw, base_url),
+                )
             else:
                 await interaction.followup.send(
                     embed=_info_embed(f"ℹ️ <@{target_id}> has not registered yet and no matching PnW nation was found.")
@@ -846,7 +915,10 @@ async def _handle_whois(
 
         if nation:
             embed = _nation_embed(nation, registered_discord=f"<@{target_id}>", base_url=base_url)
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(
+                embed=embed,
+                view=WhoisView(nation, pnw, base_url),
+            )
         else:
             await interaction.followup.send(
                 embed=_info_embed(
@@ -887,7 +959,10 @@ async def _handle_whois(
         discord_user = f"`{_format_discord_identifier(row)}`" if row else None
 
         embed = _nation_embed(nation, registered_discord=discord_user, base_url=base_url)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            embed=embed,
+            view=WhoisView(nation, pnw, base_url),
+        )
         return
 
     # ------------------------------------------------------------------
@@ -903,7 +978,10 @@ async def _handle_whois(
         row = bot.db.get_by_nation_id(nation.nation_id)
         discord_user = f"`{_format_discord_identifier(row)}`" if row else None
         embed = _nation_embed(nation, registered_discord=discord_user, base_url=base_url)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            embed=embed,
+            view=WhoisView(nation, pnw, base_url),
+        )
         return
 
     # Fall back to Discord username lookup in the local database
@@ -923,7 +1001,10 @@ async def _handle_whois(
     stored_name = _format_discord_identifier(row)
     if nation:
         embed = _nation_embed(nation, registered_discord=f"`{stored_name}`", base_url=base_url)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            embed=embed,
+            view=WhoisView(nation, pnw, base_url),
+        )
     else:
         await interaction.followup.send(
             embed=_info_embed(
@@ -1544,6 +1625,33 @@ async def config_slots_clear(interaction: discord.Interaction) -> None:
 _PAGE_SIZE = 15
 
 
+async def _get_registered_nation(interaction: discord.Interaction) -> Optional[Nation]:
+    """Return invoking user's registered nation, or None if not registered/unavailable."""
+    row = bot.db.get_by_discord_id(interaction.user.id)
+    if row is None:
+        return None
+    try:
+        return await bot.pnw.get_nation(int(row["nation_id"]))
+    except Exception:
+        log.exception("PnW API error while fetching registered nation for user %s", interaction.user)
+        return None
+
+
+async def _get_score_range_for_user(
+    interaction: discord.Interaction,
+    min_ratio: float,
+    max_ratio: float,
+    ignore_score_range: bool,
+) -> Optional[tuple[float, float]]:
+    """Return score range tuple if user is registered and filtering is enabled."""
+    if ignore_score_range:
+        return None
+    nation = await _get_registered_nation(interaction)
+    if nation is None:
+        return None
+    return (nation.score * min_ratio, nation.score * max_ratio)
+
+
 def _sort_members(
     members: list[Nation],
     war_counts: dict[int, int],
@@ -1566,6 +1674,7 @@ def _build_slots_page(
     war_counts: dict[int, int],
     page: int = 0,
     sort_key: str = "slots",
+    score_range: Optional[tuple[float, float]] = None,
 ) -> discord.Embed:
     """Return a single paginated embed for the /slots display (up to 15 nations)."""
     sorted_members = _sort_members(members, war_counts, sort_key)
@@ -1579,6 +1688,10 @@ def _build_slots_page(
     )
 
     lines: list[str] = []
+    min_score: Optional[float] = None
+    max_score: Optional[float] = None
+    if score_range is not None:
+        min_score, max_score = score_range
     for nation in page_members:
         open_slots = MAX_DEFENSIVE_SLOTS - war_counts.get(nation.nation_id, 0)
         if nation.alliance_name:
@@ -1592,6 +1705,8 @@ def _build_slots_page(
             f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}"
             f" | 🛡️ {open_slots}/{MAX_DEFENSIVE_SLOTS}"
         )
+        if min_score is not None and max_score is not None and min_score <= nation.score <= max_score:
+            line += " | 🎯 In range"
         if nation.beige_turns > 0:
             line += f" | 🟡 {nation.beige_turns} beige turns"
         lines.append(line)
@@ -1605,6 +1720,12 @@ def _build_slots_page(
     embed.set_footer(
         text=f"Page {page + 1}/{total_pages} · {total} members total · {total_open} open slots total"
     )
+    if min_score is not None and max_score is not None:
+        embed.add_field(
+            name="Your Target Range",
+            value=f"🎯 {min_score:,.0f} – {max_score:,.0f} score",
+            inline=False,
+        )
     return embed
 
 
@@ -1617,12 +1738,14 @@ class SlotsView(discord.ui.View):
         war_counts: dict[int, int],
         page: int = 0,
         sort_key: str = "slots",
+        score_range: Optional[tuple[float, float]] = None,
     ) -> None:
         super().__init__(timeout=600)
         self.members = members
         self.war_counts = war_counts
         self.page = page
         self.sort_key = sort_key
+        self.score_range = score_range
         self._refresh_buttons()
 
     def _total_pages(self) -> int:
@@ -1634,7 +1757,9 @@ class SlotsView(discord.ui.View):
 
     async def _update(self, interaction: discord.Interaction) -> None:
         self._refresh_buttons()
-        embed = _build_slots_page(self.members, self.war_counts, self.page, self.sort_key)
+        embed = _build_slots_page(
+            self.members, self.war_counts, self.page, self.sort_key, self.score_range
+        )
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
@@ -1677,7 +1802,13 @@ class SlotsView(discord.ui.View):
     name="slots",
     description="Show open defensive slots for members of the configured alliances.",
 )
-async def slots(interaction: discord.Interaction) -> None:
+@app_commands.describe(
+    ignore_score_range="If true, do not mark nations in your personal score range.",
+)
+async def slots(
+    interaction: discord.Interaction,
+    ignore_score_range: bool = False,
+) -> None:
     await interaction.response.defer()
 
     if not await _check_member_access(interaction):
@@ -1719,9 +1850,15 @@ async def slots(interaction: discord.Interaction) -> None:
         log.exception("PnW API error while fetching war counts")
         war_counts = {}
 
+    score_range = await _get_score_range_for_user(
+        interaction, 0.75, 2.5, ignore_score_range
+    )
+
     # Default: sorted by open slots descending (most vulnerable first)
-    embed = _build_slots_page(members, war_counts, page=0, sort_key="slots")
-    view = SlotsView(members, war_counts, page=0, sort_key="slots")
+    embed = _build_slots_page(
+        members, war_counts, page=0, sort_key="slots", score_range=score_range
+    )
+    view = SlotsView(members, war_counts, page=0, sort_key="slots", score_range=score_range)
     await interaction.followup.send(embed=embed, view=view)
 
 
@@ -3204,6 +3341,7 @@ def _build_spy_targets_page(
     title: str,
     multi_alliance: bool,
     page: int,
+    score_range: Optional[tuple[float, float]] = None,
 ) -> discord.Embed:
     total = len(members)
     total_pages = max(1, (total + _SPY_TARGETS_PAGE_SIZE - 1) // _SPY_TARGETS_PAGE_SIZE)
@@ -3212,6 +3350,10 @@ def _build_spy_targets_page(
     page_members = members[start : start + _SPY_TARGETS_PAGE_SIZE]
 
     lines: list[str] = []
+    min_score: Optional[float] = None
+    max_score: Optional[float] = None
+    if score_range is not None:
+        min_score, max_score = score_range
     for i, nation in enumerate(page_members, start=start + 1):
         beige = " 🔵" if nation.beige_turns > 0 else ""
         alliance_tag = (
@@ -3223,6 +3365,8 @@ def _build_spy_targets_page(
             f"{beige}{alliance_tag}"
             f" — 🏙️ {nation.num_cities} | ⭐ {nation.score:,.0f}{spy_str}"
         )
+        if min_score is not None and max_score is not None and min_score <= nation.score <= max_score:
+            line += " | 🎯 In range"
         lines.append(line)
 
     embed = discord.Embed(
@@ -3230,6 +3374,12 @@ def _build_spy_targets_page(
         description="\n".join(lines) if lines else "*(no targets found)*",
         color=discord.Color.dark_grey(),
     )
+    if min_score is not None and max_score is not None:
+        embed.add_field(
+            name="Your Spy Range",
+            value=f"🎯 {min_score:,.0f} – {max_score:,.0f} score",
+            inline=False,
+        )
     footer = f"Page {page + 1}/{total_pages} · {total} nations · sorted by cities desc · 🔵 = beiged"
     embed.set_footer(text=footer)
     return embed
@@ -3243,12 +3393,14 @@ class SpyTargetView(discord.ui.View):
         members: list[Nation],
         title: str,
         multi_alliance: bool,
+        score_range: Optional[tuple[float, float]] = None,
         page: int = 0,
     ) -> None:
         super().__init__(timeout=600)
         self._members = members
         self._title = title
         self._multi_alliance = multi_alliance
+        self._score_range = score_range
         self.page = page
         self._refresh_buttons()
 
@@ -3264,7 +3416,7 @@ class SpyTargetView(discord.ui.View):
     async def _update(self, interaction: discord.Interaction) -> None:
         self._refresh_buttons()
         embed = _build_spy_targets_page(
-            self._members, self._title, self._multi_alliance, self.page
+            self._members, self._title, self._multi_alliance, self.page, self._score_range
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -3301,9 +3453,14 @@ spy_group.add_command(spy_target_group)
     description="Find nations in the given alliances sorted by spy capacity (cities).",
 )
 @app_commands.describe(
-    alliances="Comma-separated alliance names or IDs to search (e.g. Rose, Camelot)."
+    alliances="Comma-separated alliance names or IDs to search (e.g. Rose, Camelot).",
+    ignore_score_range="If true, do not mark nations in your personal spy score range.",
 )
-async def spy_target_find(interaction: discord.Interaction, alliances: str) -> None:
+async def spy_target_find(
+    interaction: discord.Interaction,
+    alliances: str,
+    ignore_score_range: bool = False,
+) -> None:
     await interaction.response.defer()
 
     if not await _check_member_access(interaction):
@@ -3361,8 +3518,11 @@ async def spy_target_find(interaction: discord.Interaction, alliances: str) -> N
 
     multi_alliance = len(alliance_ids) > 1
     title = f"🕵️ Spy Targets — {', '.join(alliance_names)}"
-    embed = _build_spy_targets_page(members, title, multi_alliance, 0)
-    view = SpyTargetView(members, title, multi_alliance)
+    score_range = await _get_score_range_for_user(
+        interaction, 0.4, 2.5, ignore_score_range
+    )
+    embed = _build_spy_targets_page(members, title, multi_alliance, 0, score_range)
+    view = SpyTargetView(members, title, multi_alliance, score_range=score_range)
     await interaction.followup.send(embed=embed, view=view)
 
 
@@ -3404,6 +3564,7 @@ def _estimate_avg_infra(nation: pnw_api.Nation) -> float:
 def _build_missile_targets_embed(
     nations: list[tuple[pnw_api.Nation, int, float]],
     alliance_names: list[str],
+    score_range: Optional[tuple[float, float]] = None,
 ) -> discord.Embed:
     """Build the missile-targets embed.
 
@@ -3412,6 +3573,10 @@ def _build_missile_targets_embed(
     """
     title = "🚀 Missile Targets — " + ", ".join(alliance_names)
     lines: list[str] = []
+    min_score: Optional[float] = None
+    max_score: Optional[float] = None
+    if score_range is not None:
+        min_score, max_score = score_range
     for i, (nation, def_wars, avg_infra) in enumerate(nations, start=1):
         beige = " 🔵" if nation.beige_turns > 0 else ""
         infra_str = f" | 🏗️ {avg_infra:,.0f} avg infra" if avg_infra > 0 else ""
@@ -3422,6 +3587,8 @@ def _build_missile_targets_embed(
             f"{infra_str}"
             f" | 🛡️ {def_wars}/{_PNW_MAX_DEF_WARS} def"
         )
+        if min_score is not None and max_score is not None and min_score <= nation.score <= max_score:
+            line += " | 🎯 In range"
         lines.append(line)
 
     embed = discord.Embed(
@@ -3429,6 +3596,12 @@ def _build_missile_targets_embed(
         description="\n".join(lines) if lines else "*(no targets found)*",
         color=discord.Color.red(),
     )
+    if min_score is not None and max_score is not None:
+        embed.add_field(
+            name="Your Missile/War Range",
+            value=f"🎯 {min_score:,.0f} – {max_score:,.0f} score",
+            inline=False,
+        )
     embed.set_footer(
         text=f"Top {len(nations)} · sorted by avg infra desc · open def slots only · 🔵 = beiged"
     )
@@ -3452,7 +3625,13 @@ missile_group.add_command(missile_targets_group)
     name="find",
     description="Top 20 nations in the /slots alliances with the most cities that have open defensive slots.",
 )
-async def missile_target_find(interaction: discord.Interaction) -> None:
+@app_commands.describe(
+    ignore_score_range="If true, do not mark nations in your personal score range.",
+)
+async def missile_target_find(
+    interaction: discord.Interaction,
+    ignore_score_range: bool = False,
+) -> None:
     await interaction.response.defer()
 
     if not await _check_member_access(interaction):
@@ -3532,7 +3711,10 @@ async def missile_target_find(interaction: discord.Interaction) -> None:
     if not alliance_names:
         alliance_names = [str(aid) for aid in alliance_ids]
 
-    embed = _build_missile_targets_embed(top_nations, alliance_names)
+    score_range = await _get_score_range_for_user(
+        interaction, 0.75, 2.5, ignore_score_range
+    )
+    embed = _build_missile_targets_embed(top_nations, alliance_names, score_range)
     await interaction.followup.send(embed=embed)
 
 
